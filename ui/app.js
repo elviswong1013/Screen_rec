@@ -1035,6 +1035,7 @@ async function renderMerge() {
   list.innerHTML = '<div class="skel"></div>'.repeat(3);
   try { state.recentFiles = await api.recentRecordings(); } catch { state.recentFiles = []; }
   if (!$('#merge-out').value && state.settings) {
+    // 合并产物固定 MKV（多视频轨；REQ-18），不随 output_container 变化。
     $('#merge-out').value = `${state.settings.output_dir}\\merged_${fileStamp()}.mkv`;
   }
   renderMergeList();
@@ -1143,6 +1144,14 @@ function renderSettings() {
       </select>
     </div>
     <div class="field">
+      <label>成品格式</label>
+      <select id="set-container">
+        <option value="mkv" ${(s.output_container || 'mkv') === 'mkv' ? 'selected' : ''}>MKV（默认）</option>
+        <option value="mp4" ${s.output_container === 'mp4' ? 'selected' : ''}>MP4</option>
+      </select>
+      <div class="hint">录制内部始终 MKV 分段（崩溃安全）；MP4 为收尾流拷贝；多音轨 MP4 播放器通常选一轨播放（不自动混音）。</div>
+    </div>
+    <div class="field">
       <label>麦克风设备</label>
       <select id="set-mic">
         <option value="">不启用</option>
@@ -1170,6 +1179,7 @@ function renderSettings() {
       output_dir: $('#set-outdir').value.trim(),
       fps: Number($('#set-fps').value),
       audio_sample_rate: Number($('#set-sr').value),
+      output_container: $('#set-container').value,
       cursor: $('#set-cursor').checked,
       default_audio_mode: $('#set-audiomode').value,
       mic_device: $('#set-mic').value || null,

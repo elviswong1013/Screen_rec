@@ -7,7 +7,7 @@ PRD: `docs/prd/002-recording-modes.md`（Approved 2026-10-18）
 
 ## 1. 范围（本版本）
 
-**P1 采样率已实现**（M15/M15b/M14c，acc-8 ACCEPTED，2026-10-18；REQ-1..8 见 §3.1）。**P2 全屏音轨已批准**（plan-reviewer APPROVED v7 + 用户 Gate 2，2026-10-18；PRD AC-4..5，REQ-9..15 见 §3.2）。P3–P5 见 §7 占位：各期开始前补充详规并重新过审。
+**P1 采样率已实现**（acc-8 ACCEPTED）；**P2 全屏音轨已实现**（acc-10 ACCEPTED）；**P3 MP4 输出已实现（v5，2026-10-18；M17 TDD 红→绿完成）**；P4/P5 见 §7 占位。
 
 **对 001 spec 条款的保留/覆盖声明**：
 - 001 REQ-14/18（音轨身份与隔离）、REQ-19（纯录音）、REQ-26（漂移核语义：校正阈值、Hold/Track 行为）全部**保留**，仅采样率数值域参数化。
@@ -79,6 +79,21 @@ PRD: `docs/prd/002-recording-modes.md`（Approved 2026-10-18）
 - **REQ-14（AC-5）无音源显式提示**：显示器目标零音源 → 启动被拒 + 明确提示（文案含端点选项引导）。
 - **REQ-15（回归）**：既有全部 L1/L2 回归绿；P1 采样率 × 端点音源覆盖 48k 与 96k 两档组合。
 
+## 3. 需求（REQ）
+
+### 3.3 P3 MP4 输出（v5，已批准；M17 TDD）
+
+- **REQ-16（AC-6）设置项**：`output_container: "mkv" | "mp4"`，默认 mkv；serde 字段级容错（同 audio_sample_rate 模式）；设置页下拉「成品格式」+ 说明「录制内部始终 MKV 分段（崩溃安全）；MP4 为收尾流拷贝；多音轨 MP4 播放器通常选一轨播放（不自动混音）」；`ui/api.js` real/mock 接线（**mock 的正常/提前终态/恢复路径需按设置返回容器**，现状硬编码 MKV `api.js:324,407-408,500`）；保存重载与在录快照测试。
+- **REQ-17（AC-6）收尾事务**：
+  - **启动冻结**：启动时读取容器设置并冻结进路由配置（旧入口默认 MKV；**不得丢 out_rate**；托盘同路径，`commands.rs:872-879`、`route.rs:498-515` 需扩）。**最终名预留从启动即按所选容器扩展名**（`route.rs:1274-1285,1386` 的 `.mkv` 硬编码需改）。
+  - **流程**：concat 到会话目录内 `<name>.concat.mkv.tmp`（`.tmp` 后缀防恢复重扫当段，`recovery.rs:640-660,764-768`）→ 统一基础校验 → remux：`ffmpeg -hide_banner -nostdin -i <tmp> -map 0 -c copy -movflags +faststart -f mp4 <out>.tmp`（**`-map 0` 保全部流**；显式 `-f mp4`）→ MP4 校验（容器族 mov/mp4/m4a/…、**轨数=实际去重后 sources 期望值**、时长>0）→ `safe_commit` 最终 MP4 → 按 keep 清理（含临时物）。
+  - **会话级占用（正常/恢复共用）**：收尾事务**全程**（含 remux 阶段）持有会话级占用（会话目录内占用标记 + 进程内注册表）；活动探测以该占用为准并覆盖 `.tmp`/remux 阶段（扩展 `recovery.rs:585-600,714-718`）；失败后立即释放、允许同进程立即重试；**不得仅凭 PID 存活或 `.tmp` 存在判断**。测试：remux 暂停时扫描=active、第二次收尾被拒；失败后立即可重试且原段不重复处理/清理。
+  - **超时与批量回滚协调**：仅**批量启动回滚侧**显式取消/丢弃后台收尾，且取消与提交串行化、返回失败前确认 sidecar 已回收；**通用 `wait_finalized` 契约不变**（超时后后台继续，不得取消正常长录制，`route.rs:212-222`、`commands.rs:680-688`）。测试两类：①延迟 remux+第二路启动失败 → 回滚返回后无迟到成品无遗留 sidecar；②普通等待超时后仍可正常停止并成功收尾。
+  - **失败矩阵**：spawn 失败/非零退出/超时/MP4 校验失败/提交冲突 → 保留原段、不发布成品；临时物由调用层清理；`safe_commit` 自身失败契约不变（`naming.rs:119-144`）。remux 独立超时预算（非 concat 60s）、stderr 排空、sidecar Job 生命周期；**磁盘峰值 ≈3 份媒体**（原段+concat+临时 MP4）需收尾前预检。
+- **REQ-18（AC-7）恢复、幂等与合并**：`finalize_session` **执行时**一次读取 output_dir/keep_segments/output_container（非扫描时，`commands.rs:1118-1121,1516-1519` 需改）；容器设置仅作用于未完成路由；已有有效 `final_path` → 同口径复核后复用，**不因设置变化再生成另一容器**；恢复始终流拷贝既有采样率（不用当前设置重编码）。合并输出保持 MKV（`merge.rs:285-290`）；**MP4 成品可参与合并**（最小支持本产品 MP4：MP4+MP4、MP4+MKV→MKV；`crates/sr-merge/src/inputs.rs:25-32` 的 EBML 强制改为容器探测）；UI 合并页说明兼容性与多轨 MP4 限制（`index.html:107,120-122`）。
+- **REQ-19（AC-8）成品可播 + 人工验收**：ffprobe 断言容器族（`format_name` 属 `mov,mp4,m4a,3gp,3g2,mj2`，**不得断言 =="mp4"**）、逐轨率/声道/内容 FFT、整文件解码、时长容差、同步（复用 `sync_dual.rs:569-660` 断言口径）。**具名 L3 人工验收**：系统自带播放器播放 MP4 并记录 OS/播放器版本/画面/声音/同步。**高采样率风险**：Windows AAC Decoder 不支持 >48kHz（官方文档）——88.2k/96k MP4 存在播放兼容风险；**不得为过验收静默降采样或转码**，不兼容时提交用户裁决并记录为已知限制。
+- **REQ-20（回归）**：全部既有回归（含 P1 四档率、P2 端点链路、两套 UI runner）；mkv 默认路径零行为变化（sync_dual 48k 基线）。
+
 ## 4. 测试计划（REQ → 测试映射）
 
 | REQ | 测试 | 层 |
@@ -102,13 +117,20 @@ PRD: `docs/prd/002-recording-modes.md`（Approved 2026-10-18）
 | REQ-13 | `it_route_display_endpoint_tracks`：**仅预选端点 → 1 音轨**；**端点+麦克风勾选 → 2 音轨**；全音轨去重后 N 轨（端点≠系统时两条）；模式切换后按实际成品 ffprobe 轨数断言（非仅 UI DTO） | L2 |
 | REQ-14 | 零音源显示器目标：命令层拒绝 + UI 提示可见（runner） | L1/静态 |
 | REQ-15 | 回归清单（§3.1 REQ-5 全列）+ 48k/96k × 端点音源组合 | L2 |
+| REQ-16 | `unit_settings_output_container_*`：缺字段→mkv；坏值→mkv 且其余字段保留；往返持久化；设置页保存重载/在录快照（UI runner）+ mock 三路径按容器返回 | L1 |
+| REQ-17 | `unit_remux_args_*`：`-map 0`/`-c copy`/`+faststart`/`-f mp4`/`.tmp` 路径；`unit_finalize_container_failures_*`：**可注入 remux runner 在 MKV 校验之后**制造 spawn 失败/非零/超时/校验失败/提交冲突 → 原段保留、无成品、临时物清理 | L1 |
+| REQ-17 | `it_batch_rollback_no_late_commit`（**确定性注入**：可注入 remux runner 延迟 → 第二路启动失败）→ 返回失败前 sidecar 已回收、回滚后无迟到提交/无遗留成品；`it_wait_finalized_timeout_not_cancel`（普通 `wait_finalized` 超时）→ 录制**未被取消**，随后停止并成功收尾 | L2 |
+| REQ-17/19 | `it_route_container_mp4`：短录 → .mp4 成品；ffprobe 容器族、逐轨率/声道/FFT、整文件解码、时长容差；keep=false 清理；**四档率流拷贝夹具**；**多音轨 MP4（端点≠系统 2 轨）**；端点失效后的 MP4 收尾；并发名预留+提交冲突（`m11_route_commit.rs:116,208,254` 惯例） | L2 |
+| REQ-18 | `it_recovery_container_mp4`（**仅 L2 媒体侧**）：恢复产出容器与设置一致、有效 final_path 幂等复用（不重生另一容器）；**设置变更时机断言全部迁命令层 L1**：`unit_commands_recovery_settings_snapshot_once`（注入生产读取边界，断言 **Settings 快照提供者总共调用一次、output_dir/keep_segments/output_container 三字段来自同一快照**）；`it_merge_mp4_inputs`：MP4+MP4、MP4+MKV→MKV，输出 matroska | L1/L2 |
+| REQ-19 | `it_sync_dual_container_mp4`（**具名 MP4 同步变体，分析 MP4 本身**）：覆盖开始/中段/结束/段边界偏差与漂移断言（复用 `sync_dual.rs:569-660` 口径），MKV 基线保留；L3 人工：系统播放器播放 MP4（OS/播放器/画面/声音/同步）；88.2k/96k 不兼容时用户裁决（不静默降采样） | L2/L3 |
+| REQ-20 | 回归清单明确：P1 四档率 + P2 端点链路 + route/recovery/m11_*/sync_dual 48k + 两套 UI runner（mkv 默认零变化） | L2 |
 
 执行命令口径：L1 `cargo test --workspace`；L2 逐套件 `cargo test -p sr-itests --test <suite> -- --ignored --nocapture --test-threads=1`（`SESSIONNAME=Console`，独占机器，运行期保持唤醒）。
 
 ## 5. Out of scope
 
 - 端点独占模式捕获、位深/声道数选择、每路不同采样率（全局单设置）。
-- P3–P5 任何实现。
+- P4–P5 任何实现。
 - P2 是 001「仅默认端点」窄范围（001:54,297）的扩展：端点音源仅适用于显示器目标；窗口目标的隔离限制不变。
 
 ## 6. 风险
@@ -120,13 +142,15 @@ PRD: `docs/prd/002-recording-modes.md`（Approved 2026-10-18）
 - **进程环回无独立物理率**：UI 标注「跟随引擎混音率（通常 48k）」，不虚构来源精度。
 - **显示器↔端点关联**：主依据为 PnP ContainerId（本机只读实测：LS24A600N、U27G4WS 各自与对应 NVIDIA 音频端点同 ContainerId）；名称仅作 hint。克隆/同型号双屏/其它驱动的 ContainerId 完整性留 L3，歧义交用户确认。
 - **端点失效通知时序**：removed/disabled/invalidated 通知在驱动层可能延迟或缺失——L2 以注入验证传播逻辑，真实拔插留 L3。
+- **MP4 收尾资源峰值**：原段 + concat MKV + 临时 MP4 ≈ 3 份媒体体积；faststart 有第二遍 I/O；收尾前做空间预检，remux 独立超时与 Job 生命周期（不套用 concat 60s 预算）。
+- **高采样率 MP4 播放兼容**：Windows AAC Decoder 不支持 >48kHz（官方文档）——88.2k/96k MP4 可能无法在系统播放器播放；不得静默降采样/转码，不兼容提交用户裁决（L3 记录）。
 
 ## 7. 后续期占位（P2–P5）
 
 | 期 | 内容 | PRD AC | 详规时点 |
 |---|---|---|---|
 | P2 | 全屏音轨（屏幕↔HDMI/DP 端点关联） | AC-4..5 | **详规 §3.2 v7 已批准（2026-10-18）；M16 已实现（TDD 红→绿，见 §8）** |
-| P3 | MP4 输出（MKV 分段 + 收尾流拷贝 remux） | AC-6..8 | P2 后 |
+| P3 | MP4 输出（MKV 分段 + 收尾流拷贝 remux） | AC-6..8 | **§3.3 v5 已批准（2026-10-18）；M17 已实现（TDD 红→绿，见 §8）** |
 | P4 | 区域视频录制（音轨跟随音轨模式） | AC-9..11 | P3 后 |
 | P5 | 窗口内容区（UIA spike 门控，仅 Chrome/Edge + 手动微调） | AC-12..14 | spike 先行 |
 
@@ -135,4 +159,5 @@ PRD: `docs/prd/002-recording-modes.md`（Approved 2026-10-18）
 | 阶段 | 内容（REQ） | 通过条件 |
 |---|---|---|
 | M15（P1） | 采样率可选（REQ-1..8） | **已实现，acc-8 ACCEPTED（2026-10-18）**（L1/L2 证据：`docs/milestones/m15-report.md`；audio_m6 麦克风正路径本机无采集设备 → BLOCKED） |
-| M16（P2） | 全屏音轨（REQ-9..15） | **已实现（TDD 红→绿完成，2026-10-18）**：§4 L1/UI 全绿；L2 端点链路除「端点+麦克风」组合外全绿，该组合因本机无采集设备记 BLOCKED（不静默 skip）；详见 `docs/milestones/m16-report.md`。acceptor 待跑 |
+| M16（P2） | 全屏音轨（REQ-9..15） | **已实现，acc-10 ACCEPTED（2026-10-18）**：acc-9 两项 P1（终态单调/Ambiguous 首项）修复后复审通过；详见 `docs/milestones/m16-report.md` |
+| M17（P3） | MP4 输出（REQ-16..20） | **已实现（TDD 红→绿完成，2026-10-18）**：L1 全绿；L2 §4 P3 全行 + 回归绿（端点+麦克风组合因本机无采集设备 → BLOCKED；不静默 skip）；L3 人工待办见 `docs/milestones/m17-report.md`。acceptor 待跑 |

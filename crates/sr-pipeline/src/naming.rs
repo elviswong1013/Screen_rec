@@ -13,6 +13,7 @@
 //!   `MOVEFILE_REPLACE_EXISTING`）；禁止覆盖现有文件；失败保留临时文件。
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// Windows 保留设备名（大小写不敏感；含尾缀数字族）。
 const RESERVED: [&str; 22] = [
@@ -98,6 +99,47 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// REQ-24/D12：默认会话临时目录名（输出目录内、与输出同卷）。
 pub const SESSION_TMP_DIRNAME: &str = ".screenrec_tmp";
 
+// ─────────────────────────── M17/REQ-16：成品容器 ───────────────────────────
+
+/// 成品容器（M17/P3）：录制内部始终 MKV 分段；收尾按此流拷贝出成品。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputContainer {
+    /// MKV（默认；既有行为零变化）。
+    #[default]
+    Mkv,
+    /// MP4（收尾 remux：`-c copy -movflags +faststart -f mp4`）。
+    Mp4,
+}
+
+impl OutputContainer {
+    /// 成品文件扩展名（启动预留最终名即按此扩展名）。
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::Mkv => "mkv",
+            Self::Mp4 => "mp4",
+        }
+    }
+
+    /// 线格式字符串（与设置 JSON / UI 一致）。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mkv => "mkv",
+            Self::Mp4 => "mp4",
+        }
+    }
+
+    /// 解析线格式字符串（大小写不敏感；未知 → None）。
+    pub fn parse(value: &str) -> Option<Self> {
+        if value.eq_ignore_ascii_case("mkv") {
+            Some(Self::Mkv)
+        } else if value.eq_ignore_ascii_case("mp4") {
+            Some(Self::Mp4)
+        } else {
+            None
+        }
+    }
+}
+
 /// REQ-24/D12：`<output_dir>/.screenrec_tmp/<session_id>`（**纯函数**：不创建目录、
 /// 不要求存在）。
 pub fn session_tmp_dir(output_dir: &Path, session_id: &str) -> PathBuf {
@@ -112,8 +154,80 @@ pub enum CommitError {
     FinalExists { final_path: PathBuf },
     /// 验证失败：成品不出现、临时文件保留（可修复/重试）。
     VerifyFailed { detail: String },
+    /// 取消已登记（P1-2）：成品不出现；临时文件由调用方清理。
+    Cancelled,
     /// rename/IO 失败（跨卷等）；临时文件保留。
     Io { detail: String },
+}
+
+/// 提交门（P1-2）：取消与「校验 + 原子提交」互斥。
+///
+/// 取消先登记 → 后续提交拒绝；提交进行中到达的取消阻塞到提交结束，并返回
+/// `false`（取消太晚：成品归属已提交事务，调用方不得把该路径当外部文件删除）。
+#[derive(Debug, Default)]
+pub(crate) struct CommitGate {
+    state: Mutex<CommitState>,
+}
+
+#[derive(Debug, Default)]
+struct CommitState {
+    cancelled: bool,
+    committed: bool,
+}
+
+impl CommitGate {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// 登记取消：返回 `true` = 取消先于提交生效（提交必被拒绝）；`false` = 已提交，
+    /// 取消太晚。
+    pub(crate) fn cancel(&self) -> bool {
+        let mut state = self.state.lock().expect("提交门锁");
+        if state.committed {
+            false
+        } else {
+            state.cancelled = true;
+            true
+        }
+    }
+
+    /// 与 [`safe_commit`] 同语义，但校验 + rename 全程持有提交门锁：取消无法插入到
+    /// 「校验通过」与「原子提交」之间（P1-2 的提交边界线性化点）。
+    pub(crate) fn safe_commit<F>(
+        &self,
+        tmp_path: &Path,
+        final_path: &Path,
+        verify: F,
+    ) -> Result<(), CommitError>
+    where
+        F: FnOnce(&Path) -> Result<(), String>,
+    {
+        let mut state = self.state.lock().expect("提交门锁");
+        if state.cancelled {
+            return Err(CommitError::Cancelled);
+        }
+        if final_path.exists() {
+            return Err(CommitError::FinalExists {
+                final_path: final_path.to_path_buf(),
+            });
+        }
+        verify(tmp_path).map_err(|detail| CommitError::VerifyFailed { detail })?;
+        match rename_no_replace(tmp_path, final_path) {
+            Ok(()) => {
+                state.committed = true;
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(CommitError::FinalExists {
+                    final_path: final_path.to_path_buf(),
+                })
+            }
+            Err(e) => Err(CommitError::Io {
+                detail: e.to_string(),
+            }),
+        }
+    }
 }
 
 /// REQ-24 安全提交：`final_path` 已存在 → [`CommitError::FinalExists`]（快速拒绝，

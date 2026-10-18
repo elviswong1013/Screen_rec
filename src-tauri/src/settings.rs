@@ -114,6 +114,13 @@ pub struct Settings {
         deserialize_with = "deserialize_sample_rate"
     )]
     pub audio_sample_rate: u32,
+    /// 成品容器（M17/REQ-16：默认 mkv；字段级容错——坏值只降级本字段）。
+    #[serde(
+        default = "default_output_container",
+        serialize_with = "serialize_output_container",
+        deserialize_with = "deserialize_output_container"
+    )]
+    pub output_container: sr_pipeline::naming::OutputContainer,
     /// 光标捕获开关（REQ-11：默认开）。
     #[serde(default = "default_cursor")]
     pub cursor: bool,
@@ -154,6 +161,87 @@ fn default_fps() -> u32 {
 /// REQ-1：具名默认采样率（参照 `default_fps` 模式）。
 fn default_sample_rate() -> u32 {
     48_000
+}
+
+/// REQ-16：具名默认成品容器（mkv；录制内部 MKV 分段行为不变）。
+fn default_output_container() -> sr_pipeline::naming::OutputContainer {
+    sr_pipeline::naming::OutputContainer::Mkv
+}
+
+fn serialize_output_container<S: serde::Serializer>(
+    container: &sr_pipeline::naming::OutputContainer,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(container.as_str())
+}
+
+/// 字段级容错（REQ-16）：任意坏值只把本字段降级为 mkv。
+fn deserialize_output_container<'de, D>(
+    deserializer: D,
+) -> Result<sr_pipeline::naming::OutputContainer, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
+    use std::fmt;
+
+    struct ContainerVisitor;
+    impl<'de> Visitor<'de> for ContainerVisitor {
+        type Value = sr_pipeline::naming::OutputContainer;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("\"mkv\" 或 \"mp4\"")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(sr_pipeline::naming::OutputContainer::parse(v)
+                .unwrap_or(sr_pipeline::naming::OutputContainer::Mkv))
+        }
+
+        fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+            self.visit_str(&v)
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, _v: u64) -> Result<Self::Value, E> {
+            Ok(sr_pipeline::naming::OutputContainer::Mkv)
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, _v: i64) -> Result<Self::Value, E> {
+            Ok(sr_pipeline::naming::OutputContainer::Mkv)
+        }
+
+        fn visit_f64<E: serde::de::Error>(self, _v: f64) -> Result<Self::Value, E> {
+            Ok(sr_pipeline::naming::OutputContainer::Mkv)
+        }
+
+        fn visit_bool<E: serde::de::Error>(self, _v: bool) -> Result<Self::Value, E> {
+            Ok(sr_pipeline::naming::OutputContainer::Mkv)
+        }
+
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(sr_pipeline::naming::OutputContainer::Mkv)
+        }
+
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(sr_pipeline::naming::OutputContainer::Mkv)
+        }
+
+        fn visit_some<D2: serde::Deserializer<'de>>(self, d: D2) -> Result<Self::Value, D2::Error> {
+            d.deserialize_any(ContainerVisitor)
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+            Ok(sr_pipeline::naming::OutputContainer::Mkv)
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            while seq.next_element::<IgnoredAny>()?.is_some() {}
+            Ok(sr_pipeline::naming::OutputContainer::Mkv)
+        }
+    }
+
+    deserializer.deserialize_any(ContainerVisitor)
 }
 
 /// 档位归一化：四档之外的数值（含旧配置/编程构造的非法值）回落默认 48000。
@@ -251,6 +339,7 @@ impl Default for Settings {
             output_dir: default_output_dir(),
             fps: default_fps(),
             audio_sample_rate: default_sample_rate(),
+            output_container: default_output_container(),
             cursor: default_cursor(),
             default_audio_mode: AudioMode::default(),
             mic_device: None,
@@ -369,6 +458,7 @@ mod tests {
             segment_secs: 10,
             keep_segments: true,
             audio_sample_rate: 88_200,
+            output_container: sr_pipeline::naming::OutputContainer::Mp4,
         };
         let json = serde_json::to_string(&s).expect("serialize");
         let back: Settings = serde_json::from_str(&json).expect("deserialize");
@@ -577,5 +667,112 @@ mod tests {
             s.normalize();
             assert_eq!(s.audio_sample_rate, rate, "合法档位不应被改写");
         }
+    }
+
+    // ─────────────────── M17/REQ-16：output_container（默认/容错/往返） ───────────────────
+
+    #[test]
+    fn unit_settings_output_container_default_and_round_trip() {
+        use sr_pipeline::naming::OutputContainer;
+        assert_eq!(
+            Settings::default().output_container,
+            OutputContainer::Mkv,
+            "REQ-16：默认成品容器为 mkv"
+        );
+        for container in [OutputContainer::Mkv, OutputContainer::Mp4] {
+            let mut s = Settings::default();
+            s.output_container = container;
+            let json = serde_json::to_string(&s).expect("serialize");
+            let back: Settings = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(
+                back.output_container, container,
+                "REQ-16：{container:?} 应可往返持久化"
+            );
+        }
+        let s: Settings = serde_json::from_str(r#"{"output_container":"mp4"}"#).expect("mp4");
+        assert_eq!(s.output_container, OutputContainer::Mp4);
+        let s: Settings = serde_json::from_str(r#"{"output_container":"mkv"}"#).expect("mkv");
+        assert_eq!(s.output_container, OutputContainer::Mkv);
+    }
+
+    #[test]
+    fn unit_settings_output_container_missing_field_keeps_other_fields() {
+        use sr_pipeline::naming::OutputContainer;
+        let json = r#"{"output_dir":"E:\\out","fps":60,"output_container":"mp4"}"#;
+        let s: Settings = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(s.output_container, OutputContainer::Mp4);
+        assert_eq!(s.output_dir, r"E:\out");
+        assert_eq!(s.fps, 60);
+
+        let s: Settings =
+            serde_json::from_str(r#"{"output_dir":"E:\\out","fps":60}"#).expect("缺字段");
+        assert_eq!(
+            s.output_container,
+            OutputContainer::Mkv,
+            "REQ-16：缺字段 → mkv"
+        );
+        assert_eq!(s.output_dir, r"E:\out", "其余字段不得被重置");
+        assert_eq!(s.fps, 60, "其余字段不得被重置");
+    }
+
+    #[test]
+    fn unit_settings_output_container_bad_values_degrade_field_only() {
+        use sr_pipeline::naming::OutputContainer;
+        // 字段级容错：坏类型/未知字符串只降级本字段，其余字段保留（同 audio_sample_rate 模式）。
+        let bad_values = [
+            ("number", "1"),
+            ("bool", "true"),
+            ("null", "null"),
+            ("object", r#"{"container":"mp4"}"#),
+            ("array", r#"["mp4"]"#),
+            ("unknown_string", r#""mov""#),
+            ("empty_string", r#""""#),
+            ("float", "1.5"),
+        ];
+        for (label, bad) in bad_values {
+            let json = format!(r#"{{"output_dir":"D:\\kept","fps":60,"output_container":{bad}}}"#);
+            let s: Settings = serde_json::from_str(&json).unwrap_or_else(|e| {
+                panic!("REQ-16：坏值 {label} 不得导致整份设置解析失败（得到 {e}）")
+            });
+            assert_eq!(
+                s.output_container,
+                OutputContainer::Mkv,
+                "REQ-16：{label} 应只把本字段降级为默认 mkv"
+            );
+            assert_eq!(s.output_dir, r"D:\kept", "REQ-16：{label} 不得重置其余字段");
+            assert_eq!(s.fps, 60, "REQ-16：{label} 不得重置其余字段");
+        }
+    }
+
+    #[test]
+    fn unit_settings_output_container_disk_load_tolerates_bad_value() {
+        use sr_pipeline::naming::OutputContainer;
+        let dir = temp_dir("container-disk");
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        std::fs::write(
+            dir.join("settings.json"),
+            br#"{"output_dir":"D:\\out","fps":60,"output_container":"mp4"}"#,
+        )
+        .expect("write");
+        let s = load_or_default(&dir);
+        assert_eq!(s.output_container, OutputContainer::Mp4);
+        assert_eq!(s.fps, 60);
+
+        std::fs::write(
+            dir.join("settings.json"),
+            br#"{"output_dir":"D:\\out","fps":60,"output_container":123}"#,
+        )
+        .expect("write");
+        let s = load_or_default(&dir);
+        assert_eq!(
+            s.output_container,
+            OutputContainer::Mkv,
+            "磁盘坏值应只降级本字段"
+        );
+        assert_eq!(s.output_dir, r"D:\out", "磁盘坏值不得重置其余字段");
+        assert_eq!(s.fps, 60, "磁盘坏值不得重置其余字段");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -871,11 +871,12 @@ pub(crate) fn start_routes_impl(
     // 在录路由不随保存变更（托盘「开始」同样在调用时取新快照）。
     let settings = current_settings(&app);
     let encoder = encoder_override(&settings);
-    let handles = route::start_routes_with_options_and_rate(
+    let handles = route::start_routes_with_options_rate_and_container(
         cfgs,
         encoder,
         settings.keep_segments,
         settings.audio_sample_rate,
+        settings.output_container,
     )
     .map_err(|e| e.to_string())?;
     let state = app.state::<CommandsState>();
@@ -1115,11 +1116,16 @@ pub async fn finalize_session(
     session_id: String,
 ) -> Result<FinalizeSessionOut, String> {
     blocking(move || {
-        let dir = session_dir_for(&app, &session_id)?;
-        // M14c：与正常收尾共用设置保留策略（默认 false = 成品验证成功后清理原段）。
-        let keep_segments = current_settings(&app).keep_segments;
-        let outcome = recovery::finalize_session_with_options(&dir, keep_segments)
-            .map_err(|e| recovery_error_string(&e))?;
+        // M17/REQ-18：执行时一次读取 output_dir/keep_segments/output_container 同一快照
+        // （扫描时不读取；容器设置仅作用于未完成路由）。
+        let snap = finalize_session_settings_snapshot(|| current_settings(&app));
+        let dir = session_dir_for_output(&snap.output_dir, &session_id)?;
+        let outcome = recovery::finalize_session_with_options_and_container(
+            &dir,
+            snap.keep_segments,
+            snap.output_container,
+        )
+        .map_err(|e| recovery_error_string(&e))?;
         app.state::<CommandsState>().remove_recovery(&session_id);
         Ok(FinalizeSessionOut {
             finals: outcome
@@ -1233,6 +1239,27 @@ where
 
 fn current_settings(app: &AppHandle) -> Settings {
     app.state::<SettingsState>().snapshot()
+}
+
+/// M17/REQ-18：恢复收尾执行时一次读取的三字段快照（output_dir/keep_segments/
+/// output_container 必须来自**同一** Settings 快照；不得扫描时读取、执行时再读）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FinalizeSessionSettings {
+    pub output_dir: String,
+    pub keep_segments: bool,
+    pub output_container: sr_pipeline::naming::OutputContainer,
+}
+
+/// 生产读取边界（命令层与 L1 注入测试共用）：`provider` 只允许调用一次。
+pub(crate) fn finalize_session_settings_snapshot(
+    mut provider: impl FnMut() -> Settings,
+) -> FinalizeSessionSettings {
+    let s = provider();
+    FinalizeSessionSettings {
+        output_dir: s.output_dir,
+        keep_segments: s.keep_segments,
+        output_container: s.output_container,
+    }
 }
 
 /// P2：设置 → 管线编码器覆盖（Auto → None 走 D4 链；Named → 显式名）。
@@ -1514,9 +1541,14 @@ fn validate_session_id(session_id: &str) -> Result<(), String> {
 
 /// 会话目录（`<输出目录>/.screenrec_tmp/<session_id>`，REQ-24/D12）。
 fn session_dir_for(app: &AppHandle, session_id: &str) -> Result<PathBuf, String> {
-    validate_session_id(session_id)?;
     let output_dir = current_settings(app).output_dir;
-    Ok(naming::session_tmp_dir(Path::new(&output_dir), session_id))
+    session_dir_for_output(&output_dir, session_id)
+}
+
+/// 会话目录（显式输出目录快照；M17/REQ-18：恢复收尾与 output_dir 同一次读取）。
+fn session_dir_for_output(output_dir: &str, session_id: &str) -> Result<PathBuf, String> {
+    validate_session_id(session_id)?;
+    Ok(naming::session_tmp_dir(Path::new(output_dir), session_id))
 }
 
 fn is_terminal(state: &str) -> bool {
@@ -1649,6 +1681,46 @@ mod tests {
         let state = CommandsState::new();
         assert!(state.last_routes().is_none(), "无历史启动 → 无选中目标");
         assert!(!state.has_active_routes(), "初始无活动路由");
+    }
+
+    /// M17/REQ-18：恢复收尾执行时只读取一次设置快照；三字段必须来自同一快照。
+    #[test]
+    fn unit_commands_recovery_settings_snapshot_once() {
+        use sr_pipeline::naming::OutputContainer;
+        use std::cell::Cell;
+
+        let calls = Cell::new(0usize);
+        let mut first = Settings::default();
+        first.output_dir = r"D:\first".to_string();
+        first.keep_segments = true;
+        first.output_container = OutputContainer::Mp4;
+        let mut second = Settings::default();
+        second.output_dir = r"E:\second".to_string();
+        second.keep_segments = false;
+        second.output_container = OutputContainer::Mkv;
+
+        let snap = finalize_session_settings_snapshot(|| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                first.clone()
+            } else {
+                second.clone()
+            }
+        });
+        assert_eq!(
+            calls.get(),
+            1,
+            "REQ-18：Settings 快照提供者总共只能调用一次（扫描/执行不得各读一次）"
+        );
+        assert_eq!(
+            snap,
+            FinalizeSessionSettings {
+                output_dir: r"D:\first".to_string(),
+                keep_segments: true,
+                output_container: OutputContainer::Mp4,
+            },
+            "REQ-18：output_dir/keep_segments/output_container 必须来自同一快照"
+        );
     }
 
     #[test]

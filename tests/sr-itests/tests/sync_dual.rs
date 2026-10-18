@@ -21,9 +21,10 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use sr_audio::wasapi::AudioSourceSpec;
+use sr_pipeline::naming::OutputContainer;
 use sr_pipeline::route::{
-    start_routes_with_options_and_rate, Finalized, MultiRouteConfig, RouteError, RouteTarget,
-    VideoCfg,
+    start_routes_with_options_rate_and_container, Finalized, MultiRouteConfig, RouteError,
+    RouteTarget, VideoCfg,
 };
 
 static GATE: Mutex<()> = Mutex::new(());
@@ -660,6 +661,26 @@ fn assert_sync_with_audio_shape(path: &Path, span: f64, label: &str, expected_au
     );
 }
 
+/// M17/REQ-19：成品容器族断言（MP4 不得断言 == "mp4"；MKV 基线保持）。
+fn assert_container_family(path: &Path, container: OutputContainer, label: &str) {
+    let name = probe_csv(
+        path,
+        &["-show_entries", "format=format_name", "-of", "csv=p=0"],
+    )
+    .replace('"', "");
+    let tokens: Vec<&str> = name.split(',').map(str::trim).collect();
+    let ok = match container {
+        OutputContainer::Mkv => tokens.iter().any(|t| *t == "matroska" || *t == "webm"),
+        OutputContainer::Mp4 => tokens
+            .iter()
+            .any(|t| ["mov", "mp4", "m4a", "3gp", "3g2", "mj2"].contains(t)),
+    };
+    assert!(
+        ok,
+        "{label}: 容器族应为 {container:?}（format_name={name:?}）"
+    );
+}
+
 struct ChildSrc {
     child: Child,
     hwnd: u64,
@@ -716,7 +737,11 @@ fn spawn_source(freq: f64, logs: &Path, tag: &str) -> ChildSrc {
 }
 
 /// 双路同步主流程（48k 基线与 44.1k/96k 变体共用；`expected_audio` 为音轨形状断言）。
-fn run_dual(output_rate: u32, expected_audio: &str) -> (f64, Vec<Finalized>) {
+fn run_dual(
+    output_rate: u32,
+    expected_audio: &str,
+    container: OutputContainer,
+) -> (f64, Vec<Finalized>) {
     let _g = GATE.lock().unwrap_or_else(|e| e.into_inner());
     require_interactive_session();
     let _os = record_os_build();
@@ -752,7 +777,13 @@ fn run_dual(output_rate: u32, expected_audio: &str) -> (f64, Vec<Finalized>) {
         make_cfg(src_a.hwnd, src_a.pid),
         make_cfg(src_b.hwnd, src_b.pid),
     ];
-    let handles = match start_routes_with_options_and_rate(cfgs, None, false, output_rate) {
+    let handles = match start_routes_with_options_rate_and_container(
+        cfgs,
+        None,
+        false,
+        output_rate,
+        container,
+    ) {
         Ok(h) => h,
         Err(e) if matches!(e, RouteError::EncoderUnavailable) => {
             blocked(&format!("无可用编码器：{e:?}"))
@@ -796,6 +827,8 @@ fn run_dual(output_rate: u32, expected_audio: &str) -> (f64, Vec<Finalized>) {
         finals[0].final_path.display(),
         finals[1].final_path.display()
     );
+    assert_container_family(&finals[0].final_path, container, "route-A");
+    assert_container_family(&finals[1].final_path, container, "route-B");
     assert_sync_with_audio_shape(
         &finals[0].final_path,
         span,
@@ -819,7 +852,7 @@ fn run_dual(output_rate: u32, expected_audio: &str) -> (f64, Vec<Finalized>) {
 #[test]
 #[ignore = "L2：2 路 × 610s，每路不同应用音频；逐路内容级同步（P1-2a，REQ-25/26）"]
 fn it_sync_dual_routes_content_10min() {
-    let _ = run_dual(48_000, "aac,48000,2");
+    let _ = run_dual(48_000, "aac,48000,2", OutputContainer::Mkv);
 }
 
 /// M15/REQ-5：96k 输出变体——内容级同步阈值与 48k 基线相同，音轨形状断言
@@ -827,7 +860,7 @@ fn it_sync_dual_routes_content_10min() {
 #[test]
 #[ignore = "L2：2 路 × 610s（SR_M11_DUAL_SECS 可缩短），96k 输出变体"]
 fn it_sync_dual_routes_content_10min_96k() {
-    let _ = run_dual(96_000, "aac,96000,2");
+    let _ = run_dual(96_000, "aac,96000,2", OutputContainer::Mkv);
 }
 
 /// M15c/REQ-5：44.1k 输出变体——内容级同步阈值与 48k 基线相同，音轨形状断言
@@ -835,5 +868,13 @@ fn it_sync_dual_routes_content_10min_96k() {
 #[test]
 #[ignore = "L2：2 路 × 610s（SR_M11_DUAL_SECS 可缩短），44.1k 输出变体"]
 fn it_sync_dual_routes_content_10min_44100() {
-    let _ = run_dual(44_100, "aac,44100,2");
+    let _ = run_dual(44_100, "aac,44100,2", OutputContainer::Mkv);
+}
+
+/// M17/REQ-19：具名 MP4 同步变体——分析 MP4 本身（容器族 + 逐轨形状 + 内容级同步），
+/// 阈值与 MKV 基线一致（复用 `assert_sync_with_audio_shape` 口径）。
+#[test]
+#[ignore = "L2：2 路 × 610s（SR_M11_DUAL_SECS 可缩短），MP4 容器同步变体"]
+fn it_sync_dual_container_mp4() {
+    let _ = run_dual(48_000, "aac,48000,2", OutputContainer::Mp4);
 }

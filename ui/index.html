@@ -104,7 +104,7 @@
         <!-- 合并视图 -->
         <section class="view" id="view-merge">
           <h2 class="view-title">合并</h2>
-          <p class="view-desc">把多个录制文件合并为一个多轨 MKV：流拷贝、不重编码，各路视频/音频保留为独立轨道，允许分辨率与帧率不同。</p>
+          <p class="view-desc">把多个录制文件合并为一个多轨 MKV：流拷贝、不重编码，各路视频/音频保留为独立轨道，允许分辨率与帧率不同。MP4 成品也可参与合并（按容器探测接纳）；合并产物固定为 MKV（多视频轨）；多音轨 MP4 播放器通常只选一轨播放。</p>
           <div class="setup">
             <div class="panel">
               <div class="panel-title">输入文件（至少 2 个）</div>
@@ -117,9 +117,9 @@
             <div class="panel">
               <div class="panel-title">输出</div>
               <div class="field">
-                <label>输出路径（.mkv）</label>
+                <label>输出路径（.mkv；合并产物固定 MKV）</label>
                 <input type="text" id="merge-out" />
-                <div class="hint">不会覆盖输入文件；失败或取消时输入保留。</div>
+                <div class="hint">不会覆盖输入文件；失败或取消时输入保留。MP4 输入按容器探测接纳（MP4+MP4、MP4+MKV → MKV）。</div>
               </div>
               <button class="btn-primary" id="btn-merge" disabled>开始合并</button>
               <div id="merge-progress" style="margin-top:14px;"></div>

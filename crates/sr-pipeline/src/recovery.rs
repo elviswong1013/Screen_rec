@@ -9,7 +9,8 @@
 //!   回收可选（失败/弃用不删文件）。0 字节/坏 EBML 一律排除。
 //! - 活动判定 = 会话内段/WAV 的**独占打开探测**（share_mode 0）：任何在写句柄都会
 //!   使探测失败 → `Active` 拒绝收尾；**不得以 pid 存活作判据**（同进程内失败后必须
-//!   可立即重试收尾，m8-red §3.2-3）。
+//!   可立即重试收尾，m8-red §3.2-3）。M17：收尾事务全程另持会话级占用（进程内注册表 +
+//!   会话目录 `.finalize.lock` 独占句柄），覆盖 concat/remux/`.tmp` 阶段；失败立即释放。
 //! - 陈旧清单（「段完成但清单未更新」）→ 目录重扫并集，完成段必参与收尾。
 //! - 成品验证成功后按保留策略清理会话目录（[`finalize_session`] 默认清理；
 //!   [`finalize_session_with_options`] 的 `keep_segments=true` 保留原段）。失败/活动拒绝/
@@ -27,10 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::naming::{
-    next_available, safe_commit, sanitize_target_name, session_tmp_dir, CommitError,
-    SESSION_TMP_DIRNAME,
-};
+use crate::naming::{next_available, sanitize_target_name, session_tmp_dir, SESSION_TMP_DIRNAME};
 
 /// 会话目录内清单文件名（钉死）。
 pub const MANIFEST_FILE: &str = "manifest.json";
@@ -584,8 +582,31 @@ fn is_valid_mkv(ffprobe: Option<&Path>, p: &Path) -> bool {
 
 /// 活动文件探测（REQ-22「恢复扫描排除活动文件」）：会话内段/WAV 任一无法独占打开
 /// （share_mode 0；任何在写句柄都会冲突）→ 视为仍在写入。文件不存在（瞬态）不阻塞。
+///
+/// M17/REQ-17：收尾事务全程持有会话级占用（进程内注册表 + 会话目录占用标记以
+/// share_mode 0 打开）；活动探测以该占用为准，覆盖 `.tmp`/remux 阶段——不得仅凭
+/// PID 存活或 `.tmp` 存在判断。
 fn session_is_active(dir: &Path) -> bool {
     use std::os::windows::fs::OpenOptionsExt;
+    if occupied_registry()
+        .lock()
+        .map(|set| set.contains(&occupancy_key(dir)))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    let marker = dir.join(OCCUPANCY_MARKER);
+    if marker.exists() {
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&marker)
+        {
+            Ok(_) => {} // 残余/已释放标记：不判活动
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return true, // 其它进程正在收尾（独占句柄）
+        }
+    }
     for p in list_ext(dir, "mkv").into_iter().chain(list_ext(dir, "wav")) {
         match std::fs::OpenOptions::new()
             .read(true)
@@ -598,6 +619,77 @@ fn session_is_active(dir: &Path) -> bool {
         }
     }
     false
+}
+
+// ─────────────────────── M17/REQ-17：会话级占用（正常/恢复共用） ───────────────────────
+
+/// 会话目录内占用标记文件名（独占句柄；崩溃后句柄释放 → 残余标记不判活动）。
+pub(crate) const OCCUPANCY_MARKER: &str = ".finalize.lock";
+
+/// 占用失败（同进程/跨进程已有收尾事务持有）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OccupancyError {
+    AlreadyActive,
+}
+
+fn occupied_registry() -> &'static std::sync::Mutex<HashSet<PathBuf>> {
+    static REGISTRY: std::sync::OnceLock<std::sync::Mutex<HashSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+}
+
+fn occupancy_key(dir: &Path) -> PathBuf {
+    dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf())
+}
+
+/// 会话级占用守卫：构造即持有（注册表 + 独占标记）；Drop 立即释放（允许失败后重试）。
+pub(crate) struct SessionOccupancy {
+    key: PathBuf,
+    marker: PathBuf,
+    file: Option<std::fs::File>,
+}
+
+impl SessionOccupancy {
+    pub(crate) fn acquire(dir: &Path) -> Result<Self, OccupancyError> {
+        use std::os::windows::fs::OpenOptionsExt;
+        let key = occupancy_key(dir);
+        {
+            let mut set = occupied_registry().lock().expect("会话占用注册表");
+            if !set.insert(key.clone()) {
+                return Err(OccupancyError::AlreadyActive);
+            }
+        }
+        let marker = dir.join(OCCUPANCY_MARKER);
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .share_mode(0)
+            .open(&marker)
+        {
+            Ok(file) => Ok(Self {
+                key,
+                marker,
+                file: Some(file),
+            }),
+            Err(_) => {
+                if let Ok(mut set) = occupied_registry().lock() {
+                    set.remove(&key);
+                }
+                Err(OccupancyError::AlreadyActive)
+            }
+        }
+    }
+}
+
+impl Drop for SessionOccupancy {
+    fn drop(&mut self) {
+        // 先释放独占句柄，再移除标记（删除失败仅残留无害标记）。
+        drop(self.file.take());
+        let _ = std::fs::remove_file(&self.marker);
+        if let Ok(mut set) = occupied_registry().lock() {
+            set.remove(&self.key);
+        }
+    }
 }
 
 /// 封口/尾段切分：封口 = 清单标 closed 或存在更高序号的有效文件；尾段 = 最高序号的
@@ -705,6 +797,37 @@ pub fn finalize_session_with_options(
     session_dir: &Path,
     keep_segments: bool,
 ) -> Result<RecoveryOutcome, RecoveryError> {
+    finalize_session_with_options_and_container(
+        session_dir,
+        keep_segments,
+        crate::naming::OutputContainer::Mkv,
+    )
+}
+
+/// M17/REQ-18：崩溃收尾 + 成品容器（未完成路由按此容器产出；已有有效 `final_path`
+/// 幂等复用，不因设置变化再生成另一容器）。
+pub fn finalize_session_with_options_and_container(
+    session_dir: &Path,
+    keep_segments: bool,
+    container: crate::naming::OutputContainer,
+) -> Result<RecoveryOutcome, RecoveryError> {
+    finalize_session_impl(session_dir, keep_segments, container)
+}
+
+/// 既有成品容器（P1-3：按扩展名推断，复用前校验容器族与声明一致）。
+fn existing_final_container(path: &Path) -> Option<crate::naming::OutputContainer> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "mkv" => Some(crate::naming::OutputContainer::Mkv),
+        "mp4" => Some(crate::naming::OutputContainer::Mp4),
+        _ => None,
+    }
+}
+
+fn finalize_session_impl(
+    session_dir: &Path,
+    keep_segments: bool,
+    container: crate::naming::OutputContainer,
+) -> Result<RecoveryOutcome, RecoveryError> {
     if !session_dir.is_dir() {
         return Err(RecoveryError::NotFound {
             dir: session_dir.to_path_buf(),
@@ -716,6 +839,9 @@ pub fn finalize_session_with_options(
             session_id: manifest.session_id.clone(),
         });
     }
+    let occupancy = SessionOccupancy::acquire(session_dir).map_err(|_| RecoveryError::Active {
+        session_id: manifest.session_id.clone(),
+    })?;
     let output_root = session_dir
         .parent()
         .and_then(|p| p.parent())
@@ -734,10 +860,27 @@ pub fn finalize_session_with_options(
     for route_idx in 0..manifest.routes.len() {
         let route = manifest.routes[route_idx].clone();
         // 幂等：清单已记成品且存在 → 先按收尾同口径复核，再复用（无操作）。
-        // 损坏/零字节成品不得视为成功：保留原段并报错，避免默认清理删掉原段。
+        // P1-3：期望轨数（清单 streams）+ 既有成品容器族（扩展名）都必须匹配；
+        // 缺轨/错容器替代文件不得视为成功，避免默认清理删除原段。
         if let Some(f) = &route.final_path {
             if f.exists() {
-                crate::finalize::verify_final_media(&ffprobe, f).map_err(|e| {
+                let verified = if route.streams.iter().any(|s| s == "wav") {
+                    crate::finalize::verify_final_media(&ffprobe, f)
+                } else {
+                    match existing_final_container(f) {
+                        Some(container) => crate::finalize::verify_final_media_with_container(
+                            &ffprobe,
+                            f,
+                            crate::finalize::MediaExpectation::from_streams(&route.streams),
+                            container,
+                        ),
+                        None => Err(format!(
+                            "成品扩展名不受支持（{}；无法确定容器族）",
+                            f.display()
+                        )),
+                    }
+                };
+                verified.map_err(|e| {
                     fail(format!(
                         "清单已记成品但校验失败（route {}）：{e}；原段保留、拒绝清理",
                         route.route_id
@@ -754,7 +897,7 @@ pub fn finalize_session_with_options(
             outcome.repaired_wavs.extend(repair_wavs_in(session_dir)?);
             continue;
         }
-        // MKV 路由：目录重扫（陈旧清单并集）→ 封口段 concat → 安全提交。
+        // MKV 路由：目录重扫（陈旧清单并集）→ 统一收尾事务（M17：按容器 remux）。
         let closed: HashSet<PathBuf> = route
             .segments
             .iter()
@@ -775,30 +918,6 @@ pub fn finalize_session_with_options(
                 ),
             });
         }
-        let list_path = session_dir.join(format!(".finalize.{}.ffconcat", route.route_id));
-        // M10b：带音轨路由的段 `duration` 以视频轨为锚点校准（消除 concat 段首前导
-        // 空洞）；纯视频路由保持容器时长语义。
-        let has_audio = route.streams.iter().any(|s| s.starts_with('a'));
-        crate::finalize::write_segment_list(&list_path, &sealed, has_audio).map_err(|e| fail(e))?;
-        let tmp = session_dir.join(format!(
-            ".final.{}.{}.mkv.tmp",
-            route.route_id,
-            std::process::id()
-        ));
-        let ffmpeg = crate::sidecar::ffmpeg_exe().map_err(|e| fail(e))?;
-        let st = Command::new(ffmpeg)
-            .args(["-hide_banner", "-nostdin", "-loglevel", "error"])
-            .args(["-f", "concat", "-safe", "0", "-i"])
-            .arg(&list_path)
-            .args(["-map", "0", "-c", "copy", "-f", "matroska"])
-            .arg(&tmp)
-            .status()
-            .map_err(|e| fail(format!("spawn concat 失败：{e}")))?;
-        let _ = std::fs::remove_file(&list_path);
-        if !st.success() {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(fail(format!("concat 失败（exit={st}）；原段保留")));
-        }
         let stem = format!(
             "{}_{}",
             crate::naming::format_timestamp(
@@ -807,19 +926,19 @@ pub fn finalize_session_with_options(
             ),
             sanitize_target_name(&route.identity.name)
         );
-        let final_path = next_available(&output_root, &stem, "mkv");
-        let verify =
-            |p: &Path| -> Result<(), String> { crate::finalize::verify_final_media(&ffprobe, p) };
-        if let Err(e) = safe_commit(&tmp, &final_path, verify) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(match e {
-                CommitError::FinalExists { final_path } => {
-                    fail(format!("成品名冲突（{}）", final_path.display()))
-                }
-                CommitError::VerifyFailed { detail } => fail(detail),
-                CommitError::Io { detail } => fail(format!("成品提交失败：{detail}")),
-            });
-        }
+        let final_path = next_available(&output_root, &stem, container.extension());
+        let list_path = session_dir.join(format!(".finalize.{}.ffconcat", route.route_id));
+        let job = crate::finalize::FinalizeJob {
+            session_dir,
+            output_dir: output_root.clone(),
+            final_path: &final_path,
+            list_path: &list_path,
+            segments: &sealed,
+            expected: crate::finalize::MediaExpectation::from_streams(&route.streams),
+            container,
+        };
+        crate::finalize::run_finalize_transaction(&job, &crate::route::FfmpegRunner, None)
+            .map_err(|e| fail(e))?;
         outcome
             .route_finals
             .push((route.route_id.clone(), final_path.clone()));
@@ -831,8 +950,10 @@ pub fn finalize_session_with_options(
         manifest.routes[route_idx].state = "final".into();
         save_manifest_atomic(session_dir, &manifest)?;
     }
-    // M14c：全部路由收尾成功（MKV 成品已由 safe_commit 校验；WAV 已就地封口）→
+    // M14c：全部路由收尾成功（成品已由 safe_commit 校验；WAV 已就地封口）→
     // 按保留策略清理会话目录。WAV 恢复的成品在会话目录内，不能清理。
+    // 清理前释放占用（删除会话目录时占用标记不得仍被打开）。
+    drop(occupancy);
     if !outcome.route_finals.is_empty() && outcome.repaired_wavs.is_empty() {
         cleanup_session_after_finalize(session_dir, keep_segments);
     }
@@ -885,7 +1006,7 @@ pub(crate) fn create_session_dir(
 mod tests {
     use super::*;
 
-    /// 生成一个能通过收尾同口径校验（ffprobe 可解析、时长 > 0）的最小 MKV。
+    /// 生成一个能通过收尾同口径校验（容器族/期望轨数 v+a/时长 > 0）的最小 MKV。
     fn write_valid_final(path: &Path) {
         let ffmpeg = crate::sidecar::ffmpeg_exe().expect("定位锁定 ffmpeg");
         let st = Command::new(ffmpeg)
@@ -899,8 +1020,18 @@ mod tests {
                 "lavfi",
                 "-i",
                 "color=c=black:s=64x64:r=10:d=0.2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=0.2",
+                "-map",
+                "0:v",
+                "-map",
+                "1:a",
                 "-c:v",
                 "mpeg4",
+                "-c:a",
+                "aac",
                 "-f",
                 "matroska",
             ])
@@ -945,6 +1076,60 @@ mod tests {
         };
         save_manifest_atomic(&session, &manifest).expect("写会话清单");
         (root, session, final_path)
+    }
+
+    #[test]
+    fn recovery_finalize_failure_releases_occupancy_for_immediate_retry() {
+        use crate::naming::OutputContainer;
+        let root =
+            std::env::temp_dir().join(format!("sr_m17_recovery_retry_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let session = root.join(SESSION_TMP_DIRNAME).join("sess-empty");
+        std::fs::create_dir_all(&session).expect("创建会话目录");
+        let segment = session.join("out0_00000.mkv");
+        std::fs::write(&segment, b"").expect("写 0 字节段");
+        let manifest = SessionManifest {
+            version: 1,
+            session_id: "sess-empty".into(),
+            created_at_unix_ms: 0,
+            start_qpc: 0,
+            routes: vec![ManifestRoute {
+                route_id: "route-1".into(),
+                identity: RouteIdentity {
+                    pid: 0,
+                    created_at_unix_ms: 0,
+                    name: "Empty".into(),
+                    path: PathBuf::from("test"),
+                },
+                streams: vec!["v".into()],
+                segments: Vec::new(),
+                state: "recording".into(),
+                final_path: None,
+            }],
+        };
+        save_manifest_atomic(&session, &manifest).expect("写会话清单");
+
+        let first =
+            finalize_session_with_options_and_container(&session, true, OutputContainer::Mp4)
+                .expect_err("无可收尾段必须显式失败");
+        assert!(
+            matches!(first, RecoveryError::NoUsableSegments { .. }),
+            "应报 NoUsableSegments（得到 {first:?}）"
+        );
+        // 失败后占用必须立即释放：第二次不得报 Active（同进程可立即重试）。
+        let second =
+            finalize_session_with_options_and_container(&session, true, OutputContainer::Mp4)
+                .expect_err("重试仍应因无可收尾段失败");
+        assert!(
+            matches!(second, RecoveryError::NoUsableSegments { .. }),
+            "REQ-17：失败后应立即释放占用（得到 {second:?}）"
+        );
+        assert!(segment.exists(), "失败路径不得清理原段");
+        assert!(
+            !session.join(OCCUPANCY_MARKER).exists(),
+            "失败路径应移除占用标记"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1000,6 +1185,200 @@ mod tests {
             0,
             "损坏成品不得被静默改写/删除"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 仅视频的最小 MKV（缺轨负例）。
+    fn write_video_only_mkv(path: &Path) {
+        let ffmpeg = crate::sidecar::ffmpeg_exe().expect("定位锁定 ffmpeg");
+        let st = Command::new(ffmpeg)
+            .args([
+                "-hide_banner",
+                "-nostdin",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=64x64:r=10:d=0.2",
+                "-c:v",
+                "mpeg4",
+                "-f",
+                "matroska",
+            ])
+            .arg(path)
+            .status()
+            .expect("spawn 锁定 ffmpeg 生成仅视频成品");
+        assert!(st.success(), "生成仅视频成品失败（{st}）");
+    }
+
+    /// 有效 MP4 成品（v+a；跨设置幂等复用正例）。
+    fn write_valid_mp4(path: &Path) {
+        let ffmpeg = crate::sidecar::ffmpeg_exe().expect("定位锁定 ffmpeg");
+        let st = Command::new(ffmpeg)
+            .args([
+                "-hide_banner",
+                "-nostdin",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=64x64:r=10:d=0.2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=0.2",
+                "-map",
+                "0:v",
+                "-map",
+                "1:a",
+                "-c:v",
+                "mpeg4",
+                "-c:a",
+                "aac",
+                "-f",
+                "mp4",
+            ])
+            .arg(path)
+            .status()
+            .expect("spawn 锁定 ffmpeg 生成 MP4 成品");
+        assert!(st.success(), "生成 MP4 成品失败（{st}）");
+    }
+
+    /// 清单已记成品的最小会话（成品由调用方生成；原段占位用于断言保留）。
+    fn recorded_final_session(
+        tag: &str,
+        final_name: &str,
+        streams: &[&str],
+    ) -> (PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "sr_m17c_recovery_idem_{tag}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let session = root.join(SESSION_TMP_DIRNAME).join("sess-1");
+        std::fs::create_dir_all(&session).expect("创建会话目录");
+        let final_path = root.join(final_name);
+        std::fs::write(session.join("out0_00000.mkv"), b"segment-bytes").expect("写原段占位");
+        let manifest = SessionManifest {
+            version: 1,
+            session_id: "sess-1".into(),
+            created_at_unix_ms: 0,
+            start_qpc: 0,
+            routes: vec![ManifestRoute {
+                route_id: "route-1".into(),
+                identity: RouteIdentity {
+                    pid: 0,
+                    created_at_unix_ms: 0,
+                    name: "Target".into(),
+                    path: PathBuf::from("test"),
+                },
+                streams: streams.iter().map(|s| s.to_string()).collect(),
+                segments: Vec::new(),
+                state: "final".into(),
+                final_path: Some(final_path.clone()),
+            }],
+        };
+        save_manifest_atomic(&session, &manifest).expect("写会话清单");
+        (root, session, final_path)
+    }
+
+    #[test]
+    fn recovery_finalize_rejects_final_missing_declared_track_and_keeps_segment() {
+        let (root, session, final_path) =
+            recorded_final_session("missing_track", "20261018_120000_Target.mkv", &["v", "a0"]);
+        write_video_only_mkv(&final_path);
+        let segment = session.join("out0_00000.mkv");
+
+        let err = finalize_session(&session)
+            .expect_err("P1-3：清单声明 a0 但成品缺音轨：不得判成功，更不得清理原段");
+        let detail = match &err {
+            RecoveryError::RecoveryFailed { detail } => detail.clone(),
+            other => panic!("应报 RecoveryFailed（得到 {other:?}）"),
+        };
+        assert!(
+            detail.contains("轨数不符"),
+            "错误应指出期望轨数不符（得到 {detail}）"
+        );
+        assert!(
+            session.exists() && segment.exists(),
+            "缺轨负例必须保留会话目录/原段（{}）",
+            session.display()
+        );
+        assert!(
+            final_path.exists(),
+            "既有成品不得被删除/改写（{}）",
+            final_path.display()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_finalize_rejects_wrong_container_family_and_keeps_segment() {
+        let (root, session, final_path) =
+            recorded_final_session("wrong_container", "20261018_120000_Target.mp4", &["v"]);
+        write_video_only_mkv(&final_path); // 扩展名 .mp4，内容却是 matroska
+        let segment = session.join("out0_00000.mkv");
+
+        let err = finalize_session(&session)
+            .expect_err("P1-3：扩展名/容器族不符：不得判成功，更不得清理原段");
+        let detail = match &err {
+            RecoveryError::RecoveryFailed { detail } => detail.clone(),
+            other => panic!("应报 RecoveryFailed（得到 {other:?}）"),
+        };
+        assert!(
+            detail.contains("容器族不符"),
+            "错误应指出容器族不符（得到 {detail}）"
+        );
+        assert!(
+            session.exists() && segment.exists(),
+            "错容器负例必须保留会话目录/原段（{}）",
+            session.display()
+        );
+        assert!(
+            final_path.exists(),
+            "既有成品不得被删除/改写（{}）",
+            final_path.display()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_finalize_reuses_valid_existing_container_across_setting_change() {
+        use crate::naming::OutputContainer;
+        let (root, session, final_path) =
+            recorded_final_session("cross_setting", "20261018_120000_Target.mp4", &["v", "a0"]);
+        write_valid_mp4(&final_path);
+        let final_bytes = std::fs::read(&final_path).expect("读既有成品");
+
+        let outcome =
+            finalize_session_with_options_and_container(&session, true, OutputContainer::Mkv)
+                .expect("P1-3：既有有效 MP4 应跨设置变化（当前 MKV）幂等复用");
+        assert_eq!(outcome.route_finals.len(), 1);
+        assert_eq!(
+            outcome.route_finals[0].1, final_path,
+            "应复用既有 MP4，不因设置变化再生成另一容器"
+        );
+        assert_eq!(
+            std::fs::read(&final_path).expect("复用后读成品"),
+            final_bytes,
+            "幂等复用不得改写既有成品"
+        );
+        let media_count = std::fs::read_dir(&root)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| {
+                        e.path().extension().map_or(false, |x| {
+                            x.eq_ignore_ascii_case("mp4") || x.eq_ignore_ascii_case("mkv")
+                        })
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(media_count, 1, "不得生成第二容器成品");
         let _ = std::fs::remove_dir_all(&root);
     }
 

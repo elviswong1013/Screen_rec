@@ -198,6 +198,59 @@ async function clearStorageAndReload(cdp, url) {
   await waitForInPage(cdp, "!!window.SR && !!(document.querySelector('#env-badge')||{}).textContent", 8000);
 }
 
+// P2-A：正常场景下「录制中修改成品容器」→ 收尾必须按启动时冻结的容器。
+// 返回 { path, finalizedId, probe }；probe 在「修改设置前」采集
+// （state=recording 且尚未收到终态），用于识别提前终态/路由已删除的假录制。
+function runContainerSnapshot(cdp, { start, changeTo, label }) {
+  return cdp.evaluate(`(async () => {
+    const s = await window.SR.api.getSettings();
+    await window.SR.api.setSettings({ ...s, output_container: ${JSON.stringify(start)} });
+    return await new Promise((resolve, reject) => {
+      const states = new Map();
+      let finalizedId = null;
+      let probe = null;
+      const timer = setTimeout(() => {
+        off();
+        reject(new Error('等待 route_finalized 超时'));
+      }, 20000);
+      const off = window.SR.subscribeEvents((e) => {
+        if (e.event === 'route_state' && e.id) states.set(e.id, e.state);
+        if (e.event === 'route_finalized' && e.id) {
+          finalizedId = e.id;
+          clearTimeout(timer);
+          off();
+          resolve({ path: e.path, finalizedId, probe });
+        }
+      });
+      (async () => {
+        const { route_ids } = await window.SR.api.startRoutes([{
+          target: { kind: 'monitor', index: 0 },
+          video: { canvas_w: 320, canvas_h: 180, fps: 30, cursor: false },
+          audio: { mode: 'isolated', sources: [] },
+          output_dir: 'C:\\\\Users\\\\demo\\\\Videos\\\\Screen_rec',
+          _ui_label: ${JSON.stringify(label)},
+        }]);
+        const id = route_ids[0];
+        // mock 的 recording 状态事件延后 30ms 一拍。
+        await new Promise((r) => setTimeout(r, 120));
+        const cur = await window.SR.api.getSettings();
+        probe = {
+          id,
+          state: states.get(id) || null,
+          finalized: finalizedId !== null,
+        };
+        // 录制中把设置改为 changeTo：收尾必须仍按启动时冻结的 start。
+        await window.SR.api.setSettings({ ...cur, output_container: ${JSON.stringify(changeTo)} });
+        await window.SR.api.stopRoute(id);
+      })().catch((e) => {
+        clearTimeout(timer);
+        off();
+        reject(e);
+      });
+    });
+  })()`);
+}
+
 function noteText(cdp) {
   return cdp.evaluate(
     `(() => { const el = document.querySelector('#set-sample-rate-note'); return el ? el.textContent : ''; })()`
@@ -230,6 +283,17 @@ check('api.js mock 接线 getEndpointMixRate', /getEndpointMixRate\s*\(/.test(ap
 check('app.js 写入 audio_sample_rate', appSrc.includes('audio_sample_rate'), '保存设置必须包含采样率字段');
 check('app.js 调用 getEndpointMixRate', appSrc.includes('getEndpointMixRate'), '设置页应查询原生混音率');
 check('index.html 仅为挂载点', !(await readFile(path.join(ROOT, 'ui', 'index.html'), 'utf8')).includes('id="set-sr"'), '采样率控件由 app.js 动态生成');
+// M17/REQ-16：成品容器 UI + mock 三路径（正常/提前终态/恢复）按容器返回。
+check('app.js 写入 output_container', appSrc.includes('output_container'), '保存设置必须包含成品容器字段');
+check('app.js 渲染成品格式下拉', appSrc.includes('id="set-container"'), '设置页需提供成品格式下拉');
+check(
+  'api.js mock 三路径按容器返回',
+  apiSrc.includes('containerExt') &&
+    /finalizeRoute[\s\S]{0,800}container/.test(apiSrc) &&
+    /early_terminal[\s\S]{0,800}container/.test(apiSrc) &&
+    /finalizeSession[\s\S]{0,800}containerExt/.test(apiSrc),
+  'mock 的正常/提前终态/恢复路径必须按 settings.output_container 返回扩展名'
+);
 
 const { server, port: httpPort } = await startStaticServer();
 const base = `http://127.0.0.1:${httpPort}/ui/index.html`;
@@ -356,6 +420,142 @@ try {
     );
     const text = await noteText(cdp);
     check('进程环回标注跟随引擎混音率', text.includes('跟随引擎混音率'), text.trim());
+  }
+
+  // 9) M17/REQ-16：成品格式下拉 + 说明 + 保存重载
+  {
+    await clearStorageAndReload(cdp, base);
+    await openSettings(cdp);
+    const container = await cdp.evaluate(
+      `(() => { const el = document.querySelector('#set-container'); return el ? el.value : null; })()`
+    );
+    check('成品格式默认 mkv', container === 'mkv', `得到 ${container}`);
+    const hint = await cdp.evaluate(
+      `(() => { const el = document.querySelector('#set-container'); return el ? el.closest('.field').textContent : ''; })()`
+    );
+    check(
+      '成品格式说明（内部 MKV 分段/崩溃安全 + 多音轨 MP4 限制）',
+      hint.includes('崩溃安全') && hint.includes('多音轨 MP4'),
+      hint.trim()
+    );
+    await cdp.evaluate(`(() => {
+      const el = document.querySelector('#set-container');
+      el.value = 'mp4';
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      document.querySelector('#btn-save-settings').click();
+    })()`);
+    await waitForText(cdp, '#settings-msg', '已保存');
+    await cdp.navigate(base);
+    await openSettings(cdp);
+    const value = await waitForInPage(
+      cdp,
+      "document.querySelector('#set-container') && document.querySelector('#set-container').value",
+      8000
+    );
+    check('成品格式保存重载后为 mp4', value === 'mp4', `得到 ${value}`);
+  }
+
+  // 10) M17/REQ-16：mock 正常路径按容器返回
+  {
+    const p = await cdp.evaluate(`(async () => {
+      const paths = await new Promise(async (resolve) => {
+        const off = window.SR.subscribeEvents((e) => {
+          if (e.event === 'route_finalized') { off(); resolve(e.paths || [e.path]); }
+        });
+        const { route_ids } = await window.SR.api.startRoutes([{
+          target: { kind: 'monitor', index: 0 },
+          video: { canvas_w: 320, canvas_h: 180, fps: 30, cursor: false },
+          audio: { mode: 'isolated', sources: [] },
+          output_dir: 'C:\\\\Users\\\\demo\\\\Videos\\\\Screen_rec',
+          _ui_label: 'M17-normal',
+        }]);
+        await window.SR.api.stopRoute(route_ids[0]);
+      });
+      return paths[0];
+    })()`);
+    check('mock 正常路径按容器返回 .mp4', typeof p === 'string' && p.endsWith('.mp4'), p);
+  }
+
+  // 11) M17/REQ-16：mock 提前终态路径按容器返回
+  {
+    await cdp.navigate(`${base}?scenario=early_terminal`);
+    await waitForInPage(cdp, '!!window.SR', 8000);
+    const p = await cdp.evaluate(`(async () => new Promise(async (resolve) => {
+      const off = window.SR.subscribeEvents((e) => {
+        if (e.event === 'route_finalized') { off(); resolve(e.path); }
+      });
+      await window.SR.api.startRoutes([{
+        target: { kind: 'monitor', index: 0 },
+        video: { canvas_w: 320, canvas_h: 180, fps: 30, cursor: false },
+        audio: { mode: 'isolated', sources: [] },
+        output_dir: 'C:\\\\Users\\\\demo\\\\Videos\\\\Screen_rec',
+        _ui_label: 'M17-early',
+      }]);
+    }))()`);
+    check('mock 提前终态路径按容器返回 .mp4', typeof p === 'string' && p.endsWith('.mp4'), p);
+  }
+
+  // 12) M17/REQ-16：mock 恢复路径按容器返回
+  {
+    const p = await cdp.evaluate(`(async () => {
+      const { sessions } = await window.SR.api.recoverSessions();
+      const sid = sessions[0].session_id;
+      const res = await window.SR.api.finalizeSession(sid);
+      return res.finals[0].path;
+    })()`);
+    check('mock 恢复路径按容器返回 .mp4', typeof p === 'string' && p.endsWith('.mp4'), p);
+  }
+  // 13) P1-2/P2-A：录制中改成品格式 → 收尾仍按启动快照容器。
+  // 前置必须先切回正常场景：上一节 `scenario=early_terminal` 会在 startRoutes
+  // 返回前发终态并删除路由，无法覆盖「录制中改设置」。
+  {
+    await cdp.navigate(base);
+    await waitForInPage(cdp, '!!window.SR', 8000);
+    const r = await runContainerSnapshot(cdp, {
+      start: 'mkv',
+      changeTo: 'mp4',
+      label: 'P1-2-snapshot-mkv',
+    });
+    check(
+      'P2-A：改设置时该 route 仍在录制（存在且状态=recording）',
+      r?.probe?.state === 'recording' && r?.probe?.finalized === false,
+      JSON.stringify(r?.probe)
+    );
+    check(
+      'P2-A：终态按本次启动的 route ID 返回',
+      r?.probe?.id && r.finalizedId === r.probe.id,
+      `finalized=${r?.finalizedId} started=${r?.probe?.id}`
+    );
+    check(
+      '录制中改成品格式 → 收尾仍按启动快照 .mkv',
+      typeof r?.path === 'string' && r.path.endsWith('.mkv'),
+      r?.path
+    );
+  }
+
+  // 14) P2-A 反向分支：MP4 启动 → 录制中改 MKV → 收尾仍 .mp4。
+  // 双分支断言可识别「收尾读取当前设置」的错误实现（正向测不出时反向必失败）。
+  {
+    const r = await runContainerSnapshot(cdp, {
+      start: 'mp4',
+      changeTo: 'mkv',
+      label: 'P2-A-snapshot-mp4',
+    });
+    check(
+      'P2-A 反向：改设置时该 route 仍在录制（存在且状态=recording）',
+      r?.probe?.state === 'recording' && r?.probe?.finalized === false,
+      JSON.stringify(r?.probe)
+    );
+    check(
+      'P2-A 反向：终态按本次启动的 route ID 返回',
+      r?.probe?.id && r.finalizedId === r.probe.id,
+      `finalized=${r?.finalizedId} started=${r?.probe?.id}`
+    );
+    check(
+      'P2-A 反向：录制中改成品格式 → 收尾仍按启动快照 .mp4',
+      typeof r?.path === 'string' && r.path.endsWith('.mp4'),
+      r?.path
+    );
   }
 } catch (e) {
   check('runner 执行', false, e?.stack || String(e));

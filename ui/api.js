@@ -250,6 +250,7 @@ function makeMock() {
     output_dir: 'C:\\Users\\demo\\Videos\\Screen_rec',
     fps: 30,
     audio_sample_rate: 48_000,
+    output_container: 'mkv',
     cursor: true,
     default_audio_mode: 'isolated',
     mic_device: capsDegraded ? null : 'mic-realtek',
@@ -261,6 +262,9 @@ function makeMock() {
   try {
     settings = { ...defaultSettings(), ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') };
   } catch { settings = defaultSettings(); }
+
+  // M17/REQ-16：成品容器（录制内部始终 MKV 分段；正常/提前终态/恢复三路径按此返回）。
+  const containerExt = () => (settings.output_container === 'mp4' ? 'mp4' : 'mkv');
 
   // -- 命名（REQ-24 形状） ---------------------------------------------------
   const sanitize = (s) => s.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
@@ -321,7 +325,7 @@ function makeMock() {
       const base = `${entry.outDir}\\${stamp()}_${sanitize(entry.label)}`;
       const paths = entry.kind === 'audio'
         ? entry.trackLabels.map((l) => `${base}${entry.trackLabels.length > 1 ? `_${sanitize(l)}` : ''}.wav`)
-        : [`${base}.mkv`];
+        : [`${base}.${entry.container || 'mkv'}`];
       paths.forEach((path, i) => recentFiles.unshift({ path, kind: entry.kind === 'audio' ? 'audio' : 'video', when: Date.now() + i }));
       emit({ event: 'route_state', id: routeId, state: 'finalized' });
       emit({ event: 'route_finalized', id: routeId, path: paths[0], paths });
@@ -395,6 +399,7 @@ function makeMock() {
           kind: 'video',
           label,
           outDir: cfg.output_dir,
+          container: containerExt(), // M17/REQ-16：启动时冻结成品容器
           trackLabels: cfg._ui_track_labels?.length ? cfg._ui_track_labels : ['音轨 1'],
         });
         return id;
@@ -404,8 +409,8 @@ function makeMock() {
         const id = route_ids[0];
         const entry = routes.get(id);
         const path = entry
-          ? `${entry.outDir}\\${stamp()}_${sanitize(entry.label)}.mkv`
-          : `${settings.output_dir}\\${stamp()}_early.mkv`;
+          ? `${entry.outDir}\\${stamp()}_${sanitize(entry.label)}.${entry.container || containerExt()}`
+          : `${settings.output_dir}\\${stamp()}_early.${containerExt()}`;
         if (entry) {
           entry.finalized = true;
           clearInterval(entry.levelTimer);
@@ -497,7 +502,7 @@ function makeMock() {
       return {
         finals: recoveryRoutes.map((r) => ({
           route_id: r.route_id,
-          path: `${settings.output_dir}\\${stamp()}_${sanitize(r.name)}.mkv`,
+          path: `${settings.output_dir}\\${stamp()}_${sanitize(r.name)}.${containerExt()}`,
         })),
         repaired_wavs: [],
       };
@@ -518,6 +523,9 @@ function makeMock() {
       if (!next.segment_secs) throw 'segment_secs 不得为 0';
       if (![44_100, 48_000, 88_200, 96_000].includes(next.audio_sample_rate)) {
         next.audio_sample_rate = 48_000; // REQ-1：与后端同归一化口径
+      }
+      if (!['mkv', 'mp4'].includes(next.output_container)) {
+        next.output_container = 'mkv'; // REQ-16：与后端字段级容错同口径
       }
       settings = structuredClone(next);
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));

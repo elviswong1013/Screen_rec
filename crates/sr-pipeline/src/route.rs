@@ -15,6 +15,8 @@
 //! `keep_segments` 开启时保留。清理失败只记录日志、不改变收尾成功归因；失败/崩溃路径
 //! 始终保留原段（恢复状态机扫描不变）。M14b：纯录音（`start_audio_only`）成功收尾
 //! 纳入同一策略（默认清理会话目录；`keep_segments=true` 保留；失败/崩溃路径不删）。
+//! M17/P3：成品容器启动时冻结（MKV 默认/MP4 收尾流拷贝 remux）；收尾事务全程持有
+//! 会话级占用，批量回滚显式取消后台收尾（通用 `wait_finalized` 契约不变）。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -133,7 +135,8 @@ impl std::error::Error for RouteError {}
 /// 收尾产物。
 #[derive(Clone, Debug)]
 pub struct Finalized {
-    /// 成品 MKV：`{yyyyMMdd_HHmmss}_{sanitize(目标名)}.mkv`，位于 output_dir 内。
+    /// 成品：`{yyyyMMdd_HHmmss}_{sanitize(目标名)}.{mkv|mp4}`（容器启动时冻结），
+    /// 位于 output_dir 内。
     pub final_path: PathBuf,
     /// ffconcat 段清单（收尾 concat 的输入；已排除 0 字节段）。默认成功后随会话目录
     /// 清理（路径不再存在）；`keep_segments=true` 时保留。
@@ -154,6 +157,10 @@ struct Shared {
     stop_notice: Mutex<Option<StopNotice>>,
     /// L2 收尾失败分支注入（[`RouteHandle::force_finalize_failure_for_tests`]）。
     force_finalize_failure: AtomicBool,
+    /// M17/REQ-17：批量回滚显式取消后台收尾（P1-2：提交门与取消互斥；热路径检查原子标志）。
+    finalize_control: crate::finalize::FinalizeControl,
+    /// M17/REQ-17：启动冻结的成品容器（收尾按此 remux）。
+    container: crate::naming::OutputContainer,
     /// 段扫描根 = 会话临时目录（REQ-24/D12；段与 ffconcat 清单在会话目录内）。
     output_dir: PathBuf,
     /// 会话临时目录（`.screenrec_tmp/<session_id>`；manifest 维护锚点）。
@@ -170,6 +177,8 @@ struct Shared {
     stderr_tail: Arc<Mutex<String>>,
     /// 发送器写错误诊断（PeerGone 码等；错误归因以 child 退出码为准）。
     send_error: Mutex<Option<String>>,
+    /// worker 线程句柄（P1-2：批量回滚在返回前 join，确定性确认收尾线程/sidecar 已回收）。
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl Shared {
@@ -253,6 +262,33 @@ impl RouteHandle {
         self.shared
             .force_finalize_failure
             .store(true, Ordering::Release);
+    }
+
+    /// M17/REQ-17：批量启动回滚显式取消/丢弃后台收尾（正常 `wait_finalized` 契约不变）。
+    /// P1-2：登记取消与 safe_commit 的「校验 + 原子提交」互斥；返回 `true` = 取消先于
+    /// 提交生效（本次收尾必不产出成品），`false` = 提交已完成（取消太晚）。
+    pub(crate) fn cancel_finalize_for_rollback(&self) -> bool {
+        self.shared.finalize_control.request_cancel()
+    }
+
+    /// P1-2 回归/L2 注入：在 remux 中/提交边界取消后台收尾（生产回滚走
+    /// [`Self::cancel_finalize_for_rollback`]）。
+    #[doc(hidden)]
+    pub fn cancel_finalize_for_tests(&self) -> bool {
+        self.shared.finalize_control.request_cancel()
+    }
+
+    /// P1-2：等待 worker 线程终止（结果就绪后 join；确认 sidecar/媒体子进程已回收）。
+    pub(crate) fn join_worker(&self) {
+        let handle = self
+            .shared
+            .worker
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -428,6 +464,7 @@ pub fn start_route_with_options(
         None,
         keep_segments,
         sr_audio::wasapi::PIPELINE_SAMPLE_RATE,
+        crate::naming::OutputContainer::Mkv,
     )
 }
 
@@ -444,6 +481,7 @@ pub fn start_audio_route(cfg: AudioRouteConfig) -> Result<RouteHandle, RouteErro
         None,
         false,
         sr_audio::wasapi::PIPELINE_SAMPLE_RATE,
+        crate::naming::OutputContainer::Mkv,
     )
 }
 
@@ -501,6 +539,24 @@ pub fn start_routes_with_options_and_rate(
     keep_segments: bool,
     out_rate: u32,
 ) -> Result<Vec<RouteHandle>, RouteError> {
+    start_routes_with_options_rate_and_container(
+        cfgs,
+        encoder,
+        keep_segments,
+        out_rate,
+        crate::naming::OutputContainer::Mkv,
+    )
+}
+
+/// M17/REQ-17：批量启动 + 成品容器（启动时冻结进路由配置；`start_routes_with_options_and_rate`
+/// 保持 MKV 默认行为不变）。
+pub fn start_routes_with_options_rate_and_container(
+    cfgs: Vec<MultiRouteConfig>,
+    encoder: Option<String>,
+    keep_segments: bool,
+    out_rate: u32,
+    container: crate::naming::OutputContainer,
+) -> Result<Vec<RouteHandle>, RouteError> {
     assert!(out_rate > 0, "输出采样率必须为正");
     let mut handles: Vec<RouteHandle> = Vec::new();
     for cfg in cfgs {
@@ -512,18 +568,46 @@ pub fn start_routes_with_options_and_rate(
             encoder.as_deref(),
             keep_segments,
             out_rate,
+            container,
         ) {
             Ok(h) => handles.push(h),
             Err(e) => {
+                // M17/REQ-17：仅批量回滚侧显式取消/丢弃后台收尾；P1-2：取消与提交
+                // 通过提交门互斥，并在返回前 join worker 线程——确定性确认收尾线程
+                // 与 sidecar/媒体子进程已回收，杜绝迟到成品。
                 for h in &handles {
+                    h.cancel_finalize_for_rollback();
+                    ROLLBACK_CANCELS.fetch_add(1, Ordering::Release);
                     h.request_stop();
-                    if let Ok(fin) = h.wait_finalized(Duration::from_secs(90)) {
-                        // 严格回滚：删除该路成品/段/收尾清单（段保留策略允许全删）。
-                        let _ = std::fs::remove_file(&fin.final_path);
-                        for s in &fin.segments {
-                            let _ = std::fs::remove_file(s);
+                    let mut outcome = h.wait_finalized(Duration::from_secs(120));
+                    if matches!(outcome, Err(RouteError::WaitTimeout)) {
+                        eprintln!(
+                            "[route] 批量回滚：收尾等待超时；继续等待 worker 终止以确认 sidecar 回收"
+                        );
+                    }
+                    h.join_worker();
+                    if matches!(outcome, Err(RouteError::WaitTimeout)) {
+                        // join 已确认线程终止：结果应在 join 前写入；再读一次（零等待）。
+                        outcome = h.wait_finalized(Duration::ZERO);
+                    }
+                    match outcome {
+                        Ok(fin) => {
+                            // 严格回滚：删除**本次事务已提交**的成品/段/收尾清单
+                            // （Ok 仅由 safe_commit 成功后返回，成品归属本事务）。
+                            let _ = std::fs::remove_file(&fin.final_path);
+                            for s in &fin.segments {
+                                let _ = std::fs::remove_file(s);
+                            }
+                            let _ = std::fs::remove_file(&fin.segment_list);
                         }
-                        let _ = std::fs::remove_file(&fin.segment_list);
+                        Err(e) => {
+                            // P1-1：取消/失败的收尾没有提交任何成品——预留路径可能已被
+                            // 外部文件占用，绝不能在此删除（只清理本路已见段）。
+                            eprintln!("[route] 批量回滚：后台收尾已结束（{e:?}），丢弃已见段");
+                            for s in h.segments() {
+                                let _ = std::fs::remove_file(s);
+                            }
+                        }
                     }
                 }
                 return Err(e);
@@ -533,7 +617,61 @@ pub fn start_routes_with_options_and_rate(
     Ok(handles)
 }
 
-/// M16/REQ-13：启动时一次解析 System 的实际 device_id，并在轨数/管道分配前按
+/// M17/REQ-17：L2 确定性注入——remux 阶段暂停（模拟长 remux；批量回滚取消必须生效）。
+pub fn set_remux_delay_for_tests(delay: Duration) {
+    REMUX_DELAY_MS.store(delay.as_millis() as u64, Ordering::Release);
+}
+
+/// M17/REQ-17：L2 确定性注入——启动阶段延迟（模拟慢启动，让同批前序路产出路段）。
+pub fn set_start_delay_for_tests(delay: Duration) {
+    START_DELAY_MS.store(delay.as_millis() as u64, Ordering::Release);
+}
+
+static REMUX_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+static START_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+/// 收尾事务读取的 remux 注入延迟（生产默认 None）。
+pub(crate) fn remux_test_delay() -> Option<Duration> {
+    let ms = REMUX_DELAY_MS.load(Ordering::Acquire);
+    (ms > 0).then(|| Duration::from_millis(ms))
+}
+
+static ROLLBACK_CANCELS: AtomicU64 = AtomicU64::new(0);
+
+/// M17/REQ-17：批量回滚取消计数（L2 断言「回滚确实显式取消后台收尾」）。
+#[doc(hidden)]
+pub fn rollback_cancel_count_for_tests() -> u64 {
+    ROLLBACK_CANCELS.load(Ordering::Acquire)
+}
+
+type RouteStartedHook = dyn Fn(&Path) + Send + Sync;
+
+fn route_started_hook_slot() -> &'static Mutex<Option<Arc<RouteStartedHook>>> {
+    static SLOT: std::sync::OnceLock<Mutex<Option<Arc<RouteStartedHook>>>> =
+        std::sync::OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+/// P1-1 回归注入：路由成功启动（预留最终名后）回调，测试可在但仅可在该路径写入
+/// 外部占位文件，验证回滚失败分支绝不删除外部文件。生产路径永不设置。
+#[doc(hidden)]
+pub fn set_route_started_hook_for_tests(hook: Option<Arc<dyn Fn(&Path) + Send + Sync>>) {
+    *route_started_hook_slot()
+        .lock()
+        .expect("route started hook 锁") = hook;
+}
+
+fn invoke_route_started_hook(final_path: &Path) {
+    let hook = route_started_hook_slot()
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone());
+    if let Some(hook) = hook {
+        hook(final_path);
+    }
+}
+
+/// M17/REQ-13：启动时一次解析 System 的实际 device_id，并在轨数/管道分配前按
 /// 实际 ID 去重（endpoint==system → 单轨，保留端点失效监控语义）。
 pub fn resolve_audio_sources(
     sources: &[AudioSourceSpec],
@@ -1269,16 +1407,17 @@ fn final_reservations() -> &'static Mutex<std::collections::HashSet<PathBuf>> {
     FINAL_RESERVATIONS.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
 }
 
-/// 分配并**预留**成品路径（`{stem}.mkv`/`{stem}_N.mkv`；存在或已预留 → 递增 N）。
+/// 分配并**预留**成品路径（`{stem}.{ext}`/`{stem}_N.{ext}`；存在或已预留 → 递增 N）。
 /// 预留跨「启动 → 收尾」窗口：收尾完成/失败后由 [`release_final_path`] 释放。
-fn reserve_final_path(dir: &Path, stem: &str) -> PathBuf {
+/// M17/REQ-17：`ext` 来自启动冻结的容器（预留从启动即按 `.mp4`/`.mkv`）。
+fn reserve_final_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     let mut reserved = final_reservations().lock().expect("成品预留锁");
     let mut n: u32 = 0;
     loop {
         let candidate = if n == 0 {
-            dir.join(format!("{stem}.mkv"))
+            dir.join(format!("{stem}.{ext}"))
         } else {
-            dir.join(format!("{stem}_{n}.mkv"))
+            dir.join(format!("{stem}_{n}.{ext}"))
         };
         if !candidate.exists() && !reserved.contains(&candidate) {
             reserved.insert(candidate.clone());
@@ -1311,7 +1450,12 @@ fn start_route_impl(
     encoder_override: Option<&str>,
     keep_segments: bool,
     out_rate: u32,
+    container: crate::naming::OutputContainer,
 ) -> Result<RouteHandle, RouteError> {
+    let start_delay = START_DELAY_MS.load(Ordering::Acquire);
+    if start_delay > 0 {
+        std::thread::sleep(Duration::from_millis(start_delay));
+    }
     let seq = ROUTE_SEQ.fetch_add(1, Ordering::Relaxed);
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1383,7 +1527,8 @@ fn start_route_impl(
     })?;
     let token = sanitize_target_name(&target_name);
     let ts = format_timestamp(current_unix_ms(), local_utc_offset_minutes());
-    let final_path = reserve_final_path(&output_dir, &format!("{ts}_{token}"));
+    let final_path =
+        reserve_final_path(&output_dir, &format!("{ts}_{token}"), container.extension());
     // 启动失败路径释放预留；成功时把预留移交给收尾函数（`finalize` 内的守卫）。
     let final_reservation = FinalReservation(final_path.clone());
     let seg_prefix = format!("out{seq}_");
@@ -1511,6 +1656,8 @@ fn start_route_impl(
         stop: AtomicBool::new(false),
         stop_notice: Mutex::new(None),
         force_finalize_failure: AtomicBool::new(false),
+        finalize_control: crate::finalize::FinalizeControl::new(),
+        container,
         output_dir: session_dir.clone(),
         session_dir,
         route_id,
@@ -1521,6 +1668,7 @@ fn start_route_impl(
         cond: Condvar::new(),
         stderr_tail,
         send_error: Mutex::new(None),
+        worker: Mutex::new(None),
     });
 
     // ── 捕获会话启动（回调只更新最近帧槽；管道写由 CFR 发送器执行） ──
@@ -1846,9 +1994,12 @@ fn start_route_impl(
         .map_err(|e| RouteError::Internal {
             detail: format!("启动 route worker 失败: {e}"),
         })?;
-    let _ = worker; // join 由 wait_finalized 的结果就绪语义替代
+    if let Ok(mut slot) = shared.worker.lock() {
+        *slot = Some(worker);
+    }
     std::mem::forget(final_reservation); // 预留移交后台收尾（成功/失败由 finalize 守卫释放）
 
+    invoke_route_started_hook(&shared.final_path);
     Ok(RouteHandle { shared })
 }
 
@@ -2071,10 +2222,133 @@ fn sidecar_exit(ctx: &RunCtx, code: i32) -> RouteError {
     }
 }
 
-/// 收尾（REQ-21）：0 字节段排除 → 写收尾 ffconcat（M10b：以视频轨为锚点校准段
-/// `duration`，消除段首前导空洞）→ concat（显式映射 `-map 0`，c copy）。
+/// M17/REQ-17：remux 独立超时预算（非 concat 60s）。
+const REMUX_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// 媒体子进程等待结果（收尾事务用；区分超时/取消以便失败矩阵归因）。
+enum MediaWait {
+    Exited(Option<i32>),
+    Timeout,
+    Cancelled,
+}
+
+/// 等待媒体子进程（可取消）；超时/取消 → 强杀并回收（Job 绑定已在 spawn）。
+fn wait_media_child(
+    child: &Mutex<std::process::Child>,
+    timeout: Duration,
+    cancel: Option<&crate::finalize::FinalizeControl>,
+) -> MediaWait {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if cancel.is_some_and(crate::finalize::FinalizeControl::is_cancelled) {
+            let mut c = child.lock().expect("媒体子进程锁");
+            let _ = c.kill();
+            let _ = c.wait();
+            return MediaWait::Cancelled;
+        }
+        {
+            let mut c = child.lock().expect("媒体子进程锁");
+            match c.try_wait() {
+                Ok(Some(st)) => return MediaWait::Exited(st.code()),
+                Ok(None) => {}
+                Err(_) => return MediaWait::Exited(None),
+            }
+        }
+        if Instant::now() >= deadline {
+            let mut c = child.lock().expect("媒体子进程锁");
+            let _ = c.kill();
+            let _ = c.wait();
+            return MediaWait::Timeout;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// 生产媒体执行器：锁定 ffmpeg sidecar + 独立超时 + stderr 排空 + 取消。
+pub(crate) struct FfmpegRunner;
+
+impl FfmpegRunner {
+    fn run(
+        args: Vec<String>,
+        what: &str,
+        timeout: Duration,
+        cancel: Option<&crate::finalize::FinalizeControl>,
+        phase: Option<crate::finalize::FinalizeTestPhase>,
+    ) -> Result<(), String> {
+        let mut child = spawn_sidecar(&args).map_err(|e| format!("spawn {what} 失败: {e}"))?;
+        if let Some(phase) = phase {
+            // P1-2 L2 屏障：子进程已 spawn（remux 进行中）时确定性停住。
+            crate::finalize::hit_test_phase(phase);
+        }
+        let tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let drainer = spawn_stderr_drainer(&mut child, tail.clone());
+        let outcome = wait_media_child(&Mutex::new(child), timeout, cancel);
+        let _ = drainer.join();
+        match outcome {
+            MediaWait::Exited(Some(0)) => Ok(()),
+            MediaWait::Exited(code) => {
+                let tail = tail.lock().map(|t| t.clone()).unwrap_or_default();
+                Err(format!("{what} 退出码 {code:?}；stderr 尾部: {tail}"))
+            }
+            MediaWait::Timeout => Err(format!("{what} 超时（{}s）", timeout.as_secs())),
+            MediaWait::Cancelled => Err(format!("已取消（批量回滚），{what} 中止")),
+        }
+    }
+}
+
+impl crate::finalize::MediaRunner for FfmpegRunner {
+    fn concat(
+        &self,
+        list: &Path,
+        out: &Path,
+        cancel: Option<&crate::finalize::FinalizeControl>,
+    ) -> Result<(), String> {
+        let args = vec![
+            "-hide_banner".into(),
+            "-nostdin".into(),
+            "-f".into(),
+            "concat".into(),
+            "-safe".into(),
+            "0".into(),
+            "-i".into(),
+            list.to_string_lossy().to_string(),
+            "-map".into(),
+            "0".into(),
+            "-c".into(),
+            "copy".into(),
+            "-f".into(),
+            "matroska".into(),
+            out.to_string_lossy().to_string(),
+        ];
+        Self::run(args, "concat", FINALIZE_TIMEOUT, cancel, None)
+    }
+
+    fn remux(
+        &self,
+        input: &Path,
+        out: &Path,
+        cancel: Option<&crate::finalize::FinalizeControl>,
+    ) -> Result<(), String> {
+        Self::run(
+            crate::finalize::build_remux_args(input, out),
+            "remux",
+            REMUX_TIMEOUT,
+            cancel,
+            Some(crate::finalize::FinalizeTestPhase::RemuxStarted),
+        )
+    }
+}
+
+/// 收尾（REQ-21/M17）：统一收尾事务——段清单 → concat → 基础校验 →（MP4）remux →
+/// MP4 校验 → safe_commit；全程持有会话级占用。
 fn finalize(ctx: &RunCtx) -> Result<Finalized, RouteError> {
     let _reservation = FinalReservation(ctx.final_path.clone());
+    let _occupancy =
+        crate::recovery::SessionOccupancy::acquire(&ctx.shared.session_dir).map_err(|e| {
+            RouteError::FinalizeFailed {
+                detail: format!("会话级占用失败：{e:?}"),
+            }
+        })?;
     let segments = scan_segments(&ctx.shared.output_dir, &ctx.shared.seg_prefix);
     if segments.is_empty() {
         return Err(RouteError::FinalizeFailed {
@@ -2088,99 +2362,31 @@ fn finalize(ctx: &RunCtx) -> Result<Finalized, RouteError> {
         });
     }
 
-    // 清单时间轴校准仅在带音轨时启用（纯视频保持容器时长语义；M10 soak 无累积缺陷）。
-    let has_audio = ctx
-        .audio
-        .lock()
-        .map(|tracks| !tracks.is_empty())
-        .unwrap_or(false);
-    crate::finalize::write_segment_list(&ctx.finalize_list, &segments, has_audio)
-        .map_err(|detail| RouteError::FinalizeFailed { detail })?;
-
-    // P1-4：正常收尾与恢复路径统一为「临时成品 → 验证 → safe_commit(rename)」。
-    // 启动时分配的 `ctx.final_path` 保留为最终名（同秒同目标也不会覆盖：临时名含
-    // route_id + pid，提交阶段由 safe_commit 的 exists 检查兜底）。
-    let tmp_path = ctx.shared.session_dir.join(format!(
-        ".final.{}.{}.mkv.tmp",
-        ctx.shared.route_id,
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&tmp_path); // 上次中断残留（重试幂等）
-
-    let mut concat = match spawn_sidecar(&[
-        "-hide_banner".into(),
-        "-nostdin".into(),
-        "-f".into(),
-        "concat".into(),
-        "-safe".into(),
-        "0".into(),
-        "-i".into(),
-        ctx.finalize_list.to_string_lossy().to_string(),
-        "-map".into(),
-        "0".into(),
-        "-c".into(),
-        "copy".into(),
-        "-f".into(),
-        "matroska".into(),
-        tmp_path.to_string_lossy().to_string(),
-    ]) {
-        Ok(c) => c,
-        Err(e) => {
-            return Err(RouteError::FinalizeFailed {
-                detail: format!("spawn concat 失败: {e}"),
-            })
-        }
+    let audio_tracks = ctx.audio.lock().map(|tracks| tracks.len()).unwrap_or(0);
+    let job = crate::finalize::FinalizeJob {
+        session_dir: &ctx.shared.session_dir,
+        output_dir: ctx
+            .shared
+            .session_dir
+            .parent()
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| ctx.shared.session_dir.clone()),
+        final_path: &ctx.final_path,
+        list_path: &ctx.finalize_list,
+        segments: &segments,
+        expected: crate::finalize::MediaExpectation {
+            video: 1,
+            audio: audio_tracks,
+        },
+        container: ctx.shared.container,
     };
-    let concat_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    let concat_drainer = spawn_stderr_drainer(&mut concat, concat_tail.clone());
-
-    let code = wait_child_or_kill(&Mutex::new(concat), FINALIZE_TIMEOUT);
-    let _ = concat_drainer.join();
-    if !code.is_some_and(|c| c == 0) {
-        let tail = concat_tail.lock().map(|t| t.clone()).unwrap_or_default();
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(RouteError::FinalizeFailed {
-            detail: format!("concat 退出码 {code:?}；stderr 尾部: {tail}"),
-        });
-    }
-
-    // 验证（REQ-24：临时名→验证→rename；失败保留段、成品不出现）。
-    let verify = |path: &Path| -> Result<(), String> {
-        let ffprobe = crate::sidecar::ffprobe_exe().map_err(|e| e)?;
-        let out = std::process::Command::new(ffprobe)
-            .args([
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "csv=p=0",
-            ])
-            .arg(path)
-            .output()
-            .map_err(|e| format!("ffprobe 启动失败: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "ffprobe 校验失败（{}）: {}",
-                path.display(),
-                String::from_utf8_lossy(&out.stderr)
-            ));
-        }
-        let dur: f64 = String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .parse()
-            .unwrap_or(0.0);
-        if dur <= 0.0 {
-            return Err(format!("成品时长无效（{}: {dur}）", path.display()));
-        }
-        Ok(())
-    };
-    if let Err(detail) = crate::naming::safe_commit(&tmp_path, &ctx.final_path, verify) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(RouteError::FinalizeFailed {
-            detail: format!("成品提交失败: {detail:?}"),
-        });
-    }
+    crate::finalize::run_finalize_transaction(
+        &job,
+        &FfmpegRunner,
+        Some(&ctx.shared.finalize_control),
+    )
+    .map_err(|detail| RouteError::FinalizeFailed { detail })?;
 
     let fin = Finalized {
         final_path: ctx.final_path.clone(),
@@ -2189,6 +2395,8 @@ fn finalize(ctx: &RunCtx) -> Result<Finalized, RouteError> {
         stop_notice: ctx.shared.stop_notice(),
     };
     update_manifest_final(&ctx.shared, &fin.final_path);
+    // 清理前释放占用（删除会话目录时占用标记文件不得仍被打开）。
+    drop(_occupancy);
     // M14：成品验证成功 → 按保留策略清理原段。清理失败保留会话目录并记录日志，
     // 不改变本路成功归因（成品已提交）。
     cleanup_session_after_finalize(&ctx.shared.session_dir, ctx.shared.keep_segments);
