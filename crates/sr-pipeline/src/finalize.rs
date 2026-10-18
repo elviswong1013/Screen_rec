@@ -97,6 +97,49 @@ pub fn write_segment_list(
         .map_err(|e| format!("写收尾清单失败（{}）: {e}", list_path.display()))
 }
 
+/// 成品校验（收尾提交与恢复幂等复用同一口径）：存在 + 非零 + ffprobe 可解析且
+/// 容器时长 > 0。
+///
+/// `safe_commit` 在提交前校验临时成品；恢复路径「清单已记成品」分支在复用/清理前
+/// 必须用同一口径复核——否则零字节/损坏成品会被误判为成功，默认清理随即删掉原段。
+pub(crate) fn verify_final_media(ffprobe: &Path, p: &Path) -> Result<(), String> {
+    let len = std::fs::metadata(p)
+        .map_err(|e| format!("成品校验失败（{}：不存在或不可读：{e}）", p.display()))?
+        .len();
+    if len == 0 {
+        return Err(format!("成品校验失败（{}：0 字节）", p.display()));
+    }
+    let out = Command::new(ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(p)
+        .output()
+        .map_err(|e| format!("成品校验失败（{}：ffprobe 启动失败：{e}）", p.display()))?;
+    if !out.status.success() {
+        let tail: String = String::from_utf8_lossy(&out.stderr)
+            .lines()
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        return Err(format!("成品校验失败（{}：不可解析：{tail}）", p.display()));
+    }
+    let dur: f64 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0.0);
+    if !(dur > 0.0) {
+        return Err(format!("成品校验失败（{}：时长无效 {dur}）", p.display()));
+    }
+    Ok(())
+}
+
 /// 段的视频/音频包时间戳摘要（ffprobe `packet` 扫描；失败 → `None`）。
 fn segment_timing(seg: &Path) -> Option<SegmentTiming> {
     let ffprobe = match crate::sidecar::ffprobe_exe() {

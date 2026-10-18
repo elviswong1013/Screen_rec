@@ -22,7 +22,8 @@ use std::time::{Duration, Instant};
 use common::*;
 use sr_audio::wasapi::AudioSourceSpec;
 use sr_pipeline::route::{
-    start_routes_with_encoder, Finalized, MultiRouteConfig, RouteError, RouteTarget, VideoCfg,
+    start_routes_with_options_and_rate, Finalized, MultiRouteConfig, RouteError, RouteTarget,
+    VideoCfg,
 };
 
 static GATE: Mutex<()> = Mutex::new(());
@@ -564,7 +565,8 @@ fn stats(points: &[SyncPoint]) -> (f64, f64, f64, f64, f64) {
     (mean, max_abs, head, tail, slope)
 }
 
-fn assert_sync(path: &Path, span: f64, label: &str) {
+/// `expected_audio`：音轨 (codec,sample_rate,channels) 形状（48k 基线 / 44.1k/96k 变体）。
+fn assert_sync_with_audio_shape(path: &Path, span: f64, label: &str, expected_audio: &str) {
     assert_eq!(probe_streams(path, "v"), 1, "{label}: 应恰 1 视频轨");
     assert_eq!(probe_streams(path, "a"), 1, "{label}: 应恰 1 音轨");
     let v = probe_csv(
@@ -593,7 +595,7 @@ fn assert_sync(path: &Path, span: f64, label: &str) {
             "csv=p=0",
         ],
     );
-    assert_eq!(a, "aac,48000,2", "{label}: 音轨形状");
+    assert_eq!(a, expected_audio, "{label}: 音轨形状");
     let dur = probe_duration(path);
     assert!(
         (dur - span).abs() <= 3.0,
@@ -713,14 +715,13 @@ fn spawn_source(freq: f64, logs: &Path, tag: &str) -> ChildSrc {
     ChildSrc { child, hwnd, pid }
 }
 
-#[test]
-#[ignore = "L2：2 路 × 610s，每路不同应用音频；逐路内容级同步（P1-2a，REQ-25/26）"]
-fn it_sync_dual_routes_content_10min() {
+/// 双路同步主流程（48k 基线与 44.1k/96k 变体共用；`expected_audio` 为音轨形状断言）。
+fn run_dual(output_rate: u32, expected_audio: &str) -> (f64, Vec<Finalized>) {
     let _g = GATE.lock().unwrap_or_else(|e| e.into_inner());
     require_interactive_session();
     let _os = record_os_build();
 
-    let root = fresh_dir("sync");
+    let root = fresh_dir(&format!("sync_{output_rate}"));
     let logs = root.join("logs");
     std::fs::create_dir_all(&logs).expect("logs");
     let src_a = spawn_source(440.0, &logs, "a440");
@@ -751,7 +752,7 @@ fn it_sync_dual_routes_content_10min() {
         make_cfg(src_a.hwnd, src_a.pid),
         make_cfg(src_b.hwnd, src_b.pid),
     ];
-    let handles = match start_routes_with_encoder(cfgs, None) {
+    let handles = match start_routes_with_options_and_rate(cfgs, None, false, output_rate) {
         Ok(h) => h,
         Err(e) if matches!(e, RouteError::EncoderUnavailable) => {
             blocked(&format!("无可用编码器：{e:?}"))
@@ -766,7 +767,7 @@ fn it_sync_dual_routes_content_10min() {
     };
     let t0 = Instant::now();
     let target = record_secs();
-    println!("[dual] 两路已启动：每路 {target}s（应用音频 440/880Hz）");
+    println!("[dual] 两路已启动：每路 {target}s（应用音频 440/880Hz；输出率 {output_rate}）");
     let mut next = 30.0f64;
     loop {
         let e = t0.elapsed().as_secs_f64();
@@ -795,9 +796,44 @@ fn it_sync_dual_routes_content_10min() {
         finals[0].final_path.display(),
         finals[1].final_path.display()
     );
-    assert_sync(&finals[0].final_path, span, "route-A(440Hz)");
-    assert_sync(&finals[1].final_path, span, "route-B(880Hz)");
+    assert_sync_with_audio_shape(
+        &finals[0].final_path,
+        span,
+        "route-A(440Hz)",
+        expected_audio,
+    );
+    assert_sync_with_audio_shape(
+        &finals[1].final_path,
+        span,
+        "route-B(880Hz)",
+        expected_audio,
+    );
     drop(src_a);
     drop(src_b);
-    println!("[dual] 结论：两路应用音频内容级同步均通过（max≤150ms、不累积、边界覆盖）");
+    println!(
+        "[dual] 结论：两路应用音频内容级同步均通过（max≤150ms、不累积、边界覆盖；音轨 {expected_audio}）"
+    );
+    (span, finals)
+}
+
+#[test]
+#[ignore = "L2：2 路 × 610s，每路不同应用音频；逐路内容级同步（P1-2a，REQ-25/26）"]
+fn it_sync_dual_routes_content_10min() {
+    let _ = run_dual(48_000, "aac,48000,2");
+}
+
+/// M15/REQ-5：96k 输出变体——内容级同步阈值与 48k 基线相同，音轨形状断言
+/// `aac,96000,2`（48k 基线用例保持 `aac,48000,2` 不变）。
+#[test]
+#[ignore = "L2：2 路 × 610s（SR_M11_DUAL_SECS 可缩短），96k 输出变体"]
+fn it_sync_dual_routes_content_10min_96k() {
+    let _ = run_dual(96_000, "aac,96000,2");
+}
+
+/// M15c/REQ-5：44.1k 输出变体——内容级同步阈值与 48k 基线相同，音轨形状断言
+/// `aac,44100,2`（非整数基础比率路径）。
+#[test]
+#[ignore = "L2：2 路 × 610s（SR_M11_DUAL_SECS 可缩短），44.1k 输出变体"]
+fn it_sync_dual_routes_content_10min_44100() {
+    let _ = run_dual(44_100, "aac,44100,2");
 }

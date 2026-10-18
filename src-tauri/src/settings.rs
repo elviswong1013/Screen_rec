@@ -96,6 +96,9 @@ impl<'de> serde::Deserialize<'de> for EncoderSetting {
     }
 }
 
+/// 录制音频采样率四档（REQ-1：44.1k / 48k / 88.2k / 96k）。
+pub const AUDIO_SAMPLE_RATES: [u32; 4] = [44_100, 48_000, 88_200, 96_000];
+
 /// 应用设置（§3.4 数据模型；字段默认值与规格一致）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
@@ -105,6 +108,12 @@ pub struct Settings {
     /// 帧率（默认 30）。
     #[serde(default = "default_fps")]
     pub fps: u32,
+    /// 录制音频采样率（M15/REQ-1：默认 48000；字段级容错——坏类型只降级本字段）。
+    #[serde(
+        default = "default_sample_rate",
+        deserialize_with = "deserialize_sample_rate"
+    )]
+    pub audio_sample_rate: u32,
     /// 光标捕获开关（REQ-11：默认开）。
     #[serde(default = "default_cursor")]
     pub cursor: bool,
@@ -142,6 +151,92 @@ fn default_fps() -> u32 {
     30
 }
 
+/// REQ-1：具名默认采样率（参照 `default_fps` 模式）。
+fn default_sample_rate() -> u32 {
+    48_000
+}
+
+/// 档位归一化：四档之外的数值（含旧配置/编程构造的非法值）回落默认 48000。
+pub fn normalize_sample_rate(rate: u32) -> u32 {
+    if AUDIO_SAMPLE_RATES.contains(&rate) {
+        rate
+    } else {
+        default_sample_rate()
+    }
+}
+
+/// 字段级容错反序列化（REQ-1）：接受任意 JSON 值，只有合法四档 u32 保留；
+/// 负数/字符串/null/溢出/浮点/对象/数组等坏类型只把**本字段**降级为默认，
+/// 不影响同一份设置中的其它字段。
+fn deserialize_sample_rate<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
+    use std::fmt;
+
+    struct SampleRateVisitor;
+    impl<'de> Visitor<'de> for SampleRateVisitor {
+        type Value = u32;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("四档采样率之一（44100/48000/88200/96000）")
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(u32::try_from(v)
+                .map(normalize_sample_rate)
+                .unwrap_or_else(|_| default_sample_rate()))
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(u32::try_from(v)
+                .map(normalize_sample_rate)
+                .unwrap_or_else(|_| default_sample_rate()))
+        }
+
+        fn visit_f64<E: serde::de::Error>(self, _v: f64) -> Result<Self::Value, E> {
+            Ok(default_sample_rate())
+        }
+
+        fn visit_bool<E: serde::de::Error>(self, _v: bool) -> Result<Self::Value, E> {
+            Ok(default_sample_rate())
+        }
+
+        fn visit_str<E: serde::de::Error>(self, _v: &str) -> Result<Self::Value, E> {
+            Ok(default_sample_rate())
+        }
+
+        fn visit_string<E: serde::de::Error>(self, _v: String) -> Result<Self::Value, E> {
+            Ok(default_sample_rate())
+        }
+
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(default_sample_rate())
+        }
+
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(default_sample_rate())
+        }
+
+        fn visit_some<D2: serde::Deserializer<'de>>(self, d: D2) -> Result<Self::Value, D2::Error> {
+            d.deserialize_any(SampleRateVisitor)
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+            Ok(default_sample_rate())
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            while seq.next_element::<IgnoredAny>()?.is_some() {}
+            Ok(default_sample_rate())
+        }
+    }
+
+    deserializer.deserialize_any(SampleRateVisitor)
+}
+
 fn default_cursor() -> bool {
     true
 }
@@ -155,6 +250,7 @@ impl Default for Settings {
         Self {
             output_dir: default_output_dir(),
             fps: default_fps(),
+            audio_sample_rate: default_sample_rate(),
             cursor: default_cursor(),
             default_audio_mode: AudioMode::default(),
             mic_device: None,
@@ -166,6 +262,11 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// REQ-1 归一化入口（磁盘加载与 `set_settings` 共用）：非法档位 → 48000。
+    pub fn normalize(&mut self) {
+        self.audio_sample_rate = normalize_sample_rate(self.audio_sample_rate);
+    }
+
     /// 轻量校验（M1 最小：拒绝必然非法值；更严的取值域由后续里程碑按规格钉死）。
     pub fn validate(&self) -> Result<(), String> {
         if self.fps == 0 {
@@ -187,7 +288,11 @@ pub fn load_or_default(dir: &Path) -> Settings {
     let path = dir.join(SETTINGS_FILE);
     match std::fs::read(&path) {
         Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
-            Ok(s) => s,
+            Ok(mut s) => {
+                // REQ-1：磁盘加载与 set_settings 复用同一归一化（非法档位 → 48000）。
+                s.normalize();
+                s
+            }
             Err(e) => {
                 eprintln!("[settings] {path:?} 解析失败，回退默认值: {e}");
                 let s = Settings::default();
@@ -263,6 +368,7 @@ mod tests {
             encoder: EncoderSetting::Named("h264_mf".to_string()),
             segment_secs: 10,
             keep_segments: true,
+            audio_sample_rate: 88_200,
         };
         let json = serde_json::to_string(&s).expect("serialize");
         let back: Settings = serde_json::from_str(&json).expect("deserialize");
@@ -356,5 +462,120 @@ mod tests {
         let s = load_or_default(&dir);
         assert_eq!(s, Settings::default(), "损坏文件应回退默认值");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─────────────────── M15/REQ-1：audio_sample_rate（四档 + 字段级容错） ───────────────────
+
+    #[test]
+    fn unit_settings_sample_rate_defaults_and_four_rate_round_trip() {
+        assert_eq!(
+            Settings::default().audio_sample_rate,
+            48_000,
+            "REQ-1：默认 48000"
+        );
+        for rate in [44_100u32, 48_000, 88_200, 96_000] {
+            let mut s = Settings::default();
+            s.audio_sample_rate = rate;
+            let json = serde_json::to_string(&s).expect("serialize");
+            let back: Settings = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back.audio_sample_rate, rate, "REQ-1：四档 {rate} 应可往返");
+        }
+    }
+
+    #[test]
+    fn unit_settings_sample_rate_missing_field_keeps_other_fields() {
+        let json = r#"{"output_dir":"E:\\out","fps":60,"audio_sample_rate":88200}"#;
+        let full: Settings = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(full.audio_sample_rate, 88_200, "显式值应保留");
+        assert_eq!(full.fps, 60);
+
+        let no_rate = r#"{"output_dir":"E:\\out","fps":60}"#;
+        let s: Settings = serde_json::from_str(no_rate).expect("缺字段应可解析");
+        assert_eq!(s.audio_sample_rate, 48_000, "REQ-1：缺字段 → 默认 48000");
+        assert_eq!(s.output_dir, r"E:\out", "其余字段不得被重置");
+        assert_eq!(s.fps, 60, "其余字段不得被重置");
+    }
+
+    #[test]
+    fn unit_settings_sample_rate_bad_types_degrade_field_only() {
+        // 字段级容错：负数字符串/null/溢出/非法档位/浮点只降级该字段，其余字段保留。
+        let bad_values = [
+            ("negative", r#"-48000"#),
+            ("string", r#""96000""#),
+            ("null", "null"),
+            ("overflow_u64", r#"18446744073709551616"#),
+            ("overflow_f64", r#"1e300"#),
+            ("unknown_rate", r#"12345"#),
+            ("float", r#"48000.5"#),
+            ("object", r#"{"rate":96000}"#),
+            ("array", r#"[96000]"#),
+            ("bool", "true"),
+        ];
+        for (label, bad) in bad_values {
+            let json = format!(r#"{{"output_dir":"D:\\kept","fps":60,"audio_sample_rate":{bad}}}"#);
+            let s: Settings = serde_json::from_str(&json).unwrap_or_else(|e| {
+                panic!("REQ-1：坏类型 {label} 不得导致整份设置解析失败（得到 {e}）")
+            });
+            assert_eq!(
+                s.audio_sample_rate, 48_000,
+                "REQ-1：{label} 应只把本字段降级为默认 48000"
+            );
+            assert_eq!(s.output_dir, r"D:\kept", "REQ-1：{label} 不得重置其余字段");
+            assert_eq!(s.fps, 60, "REQ-1：{label} 不得重置其余字段");
+        }
+    }
+
+    #[test]
+    fn unit_settings_sample_rate_disk_load_normalizes() {
+        let dir = temp_dir("rate-disk");
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        std::fs::write(
+            dir.join("settings.json"),
+            br#"{"output_dir":"D:\\out","fps":60,"audio_sample_rate":44100}"#,
+        )
+        .expect("write");
+        let s = load_or_default(&dir);
+        assert_eq!(s.audio_sample_rate, 44_100, "磁盘入口应保留合法档位");
+        assert_eq!(s.fps, 60);
+
+        std::fs::write(
+            dir.join("settings.json"),
+            br#"{"output_dir":"D:\\out","fps":60,"audio_sample_rate":12345}"#,
+        )
+        .expect("write");
+        let s = load_or_default(&dir);
+        assert_eq!(
+            s.audio_sample_rate, 48_000,
+            "磁盘入口应归一化非法档位（与 set_settings 同函数）"
+        );
+        assert_eq!(s.fps, 60, "归一化不得重置其余字段");
+
+        std::fs::write(
+            dir.join("settings.json"),
+            br#"{"output_dir":"D:\\out","fps":60,"audio_sample_rate":"96000"}"#,
+        )
+        .expect("write");
+        let s = load_or_default(&dir);
+        assert_eq!(s.audio_sample_rate, 48_000, "磁盘坏类型 → 默认");
+        assert_eq!(s.fps, 60, "磁盘坏类型不得重置其余字段");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unit_settings_sample_rate_normalize_is_idempotent() {
+        let mut s = Settings::default();
+        s.audio_sample_rate = 12_345;
+        s.normalize();
+        assert_eq!(s.audio_sample_rate, 48_000);
+        s.normalize();
+        assert_eq!(s.audio_sample_rate, 48_000, "归一化应幂等");
+        for rate in [44_100u32, 48_000, 88_200, 96_000] {
+            let mut s = Settings::default();
+            s.audio_sample_rate = rate;
+            s.normalize();
+            assert_eq!(s.audio_sample_rate, rate, "合法档位不应被改写");
+        }
     }
 }

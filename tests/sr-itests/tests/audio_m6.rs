@@ -22,7 +22,8 @@
 //! 接口契约（测试即契约，详见 docs/milestones/m6-red-report.md §3；M4 契约的 M6 扩展面）：
 //! - `sr_audio::wasapi::capture_device_loopback(duration) -> Result<CapturedPcm, CaptureError>`
 //!   默认渲染端点设备环回（REQ-15；S3 apploop `--device-loopback` 同构），复用同一
-//!   采集核（48k/f32/立体声 autoconvert、时长钉齐 ±48 帧）；默认端点缺失/激活失败 →
+//!   采集核（M15/REQ-7：设备原生采样率或 48000 回退，f32/立体声 autoconvert；
+//!   时长钉齐 ±48 帧、以实际捕获率为域）；默认端点缺失/激活失败 →
 //!   `CaptureError::LoopbackUnavailable`（L2 → BLOCKED）。
 //! - `sr_audio::wasapi::list_capture_devices() -> Result<Vec<AudioDeviceInfo>, CaptureError>`
 //!   采集（麦克风）设备枚举（REQ-16；无设备 → Ok 空列表——明确报告，不静默）；
@@ -39,7 +40,7 @@
 //!   `-> Result<AudioOnlyHandle, RouteError>`；`AudioOnlyHandle::request_stop()` /
 //!   `wait_finalized(timeout) -> Result<AudioOnlyFinalized, RouteError>`（**停止即成品**：
 //!   WAV 无 concat/后台收尾）；`AudioOnlyFinalized.wav_paths` 与 sources **同序同长**，
-//!   每来源一条独立 WAV（48kHz s16 立体声）。
+//!   每来源一条独立 WAV（默认输出率 48kHz s16 立体声；M15/REQ-3 可设为 44.1/88.2/96k）。
 //! - `start_audio_route` 的 `AudioSourceSpec::System`（REQ-15 路由侧）与 `Mic`（REQ-16
 //!   路由侧）语义落地（M4 时二者显式 TargetInvalid）；全音轨轨组织 = 给定来源列表
 //!   各一条独立轨、互不混音（REQ-17「目标应用 + 系统 + 麦克风 + 追加应用」）。
@@ -546,17 +547,22 @@ fn collect_files_recursive(dir: &Path, ext: &str) -> Vec<PathBuf> {
 }
 
 /// 捕获结果公共断言（REQ-18 管线格式 + 时长按请求值钉齐，M4 同款）。
+///
+/// M15/REQ-8 率域迁移：帧数/时长以**实际捕获率**计算（不再是固定 48k；
+/// 本机默认端点 48k 时与既有断言等价）。
 fn assert_captured_pcm(cap: &CapturedPcm, expect_secs: u64, label: &str) {
-    assert_eq!(
-        cap.sample_rate, 48_000,
-        "REQ-18：{label} 管线格式应为 48kHz"
+    assert!(
+        cap.sample_rate > 0,
+        "REQ-18：{label} 应返回实际捕获率（得到 {}）",
+        cap.sample_rate
     );
     assert_eq!(cap.channels, 2, "REQ-18：{label} 管线格式应为立体声");
     let frames = cap.samples.len() / 2;
-    let expect = expect_secs as usize * 48_000;
+    let expect = expect_secs as usize * cap.sample_rate as usize;
     assert!(
         (frames as i64 - expect as i64).abs() <= 48,
-        "REQ-18：{label} 静音补齐应把时长钉到请求值（帧数 {frames} vs 期望 {expect}，容差 48 帧/1ms）"
+        "REQ-18：{label} 静音补齐应把时长钉到请求值（捕获率 {}；帧数 {frames} vs 期望 {expect}，容差 48 帧/1ms）",
+        cap.sample_rate
     );
 }
 
@@ -632,7 +638,8 @@ fn it_audio_device_loopback_rms() {
     );
 
     let left: Vec<f32> = cap.samples.chunks(2).map(|c| c[0]).collect();
-    let mid = &left[48_000..left.len() - 48_000]; // 去首尾 1s（起播/尾包过渡）
+    let rate = cap.sample_rate as usize;
+    let mid = &left[rate..left.len() - rate]; // 去首尾 1s（起播/尾包过渡；M15：捕获率域）
     let rms = audio_rms(mid);
     println!("[devlb] 去首尾 1s RMS={rms:.4}（阈值 ≥{DEV_RMS_MIN}）");
     assert!(
@@ -640,7 +647,7 @@ fn it_audio_device_loopback_rms() {
         "REQ-15：系统轨（整机混音）应非静音（RMS {rms:.4} < {DEV_RMS_MIN}；数字静音 ≈1e-4 量级）"
     );
 
-    let b = bands_of(mid, 48_000);
+    let b = bands_of(mid, cap.sample_rate);
     println!(
         "[devlb] 440={:.1}dB 880={:.1}dB 本底={:.1}dB",
         b.t440, b.t880, b.floor
@@ -732,14 +739,16 @@ fn it_mic_capture_present_or_skip() {
     };
     assert_captured_pcm(&cap, 6, "麦克风");
     let mono: Vec<f32> = cap.samples.chunks(2).map(|c| c[0]).collect();
+    let rate = cap.sample_rate as usize;
     assert!(
-        mono.len() > 3 * 48_000,
-        "麦克风样本应 ≥3s（得到 {} 帧）",
-        mono.len()
+        mono.len() > 3 * rate,
+        "麦克风样本应 ≥3s（得到 {} 帧 @ {}Hz）",
+        mono.len(),
+        cap.sample_rate
     );
-    let mid = &mono[48_000..mono.len() - 48_000];
+    let mid = &mono[rate..mono.len() - rate];
     let rms = audio_rms(mid);
-    let spec = avg_spectrum(mid, 48_000);
+    let spec = avg_spectrum(mid, cap.sample_rate);
     let p1200 = spec.band_peak_rel_db(1200.0, 5.0);
     let floor = spec.band_median_rel_db(100.0, 6000.0, &[(1190.0, 1210.0)]);
     println!(

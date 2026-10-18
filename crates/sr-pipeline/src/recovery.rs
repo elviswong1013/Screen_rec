@@ -11,9 +11,13 @@
 //!   使探测失败 → `Active` 拒绝收尾；**不得以 pid 存活作判据**（同进程内失败后必须
 //!   可立即重试收尾，m8-red §3.2-3）。
 //! - 陈旧清单（「段完成但清单未更新」）→ 目录重扫并集，完成段必参与收尾。
-//! - 原段永不删除（成功/失败/活动拒绝路径）；幂等（收尾成功后清单记 `final_path`，
-//!   二次调用直接复用）；清单损坏/缺失 → `RecoveryFailed`（保留原段、可显式丢弃）。
+//! - 成品验证成功后按保留策略清理会话目录（[`finalize_session`] 默认清理；
+//!   [`finalize_session_with_options`] 的 `keep_segments=true` 保留原段）。失败/活动拒绝/
+//!   清单损坏路径永不删除原段；幂等（收尾成功后清单记 `final_path`，二次调用先按
+//!   收尾同口径复核成品再复用——损坏成品报错并保留原段；默认清理后会话目录已不存在，
+//!   再次调用返回 `NotFound`；需重试/核对原段时用 keep=true）。
 //! - WAV 崩溃残留就地封口（复用 [`sr_audio::wav::repair_wav`]），列入 `repaired_wavs`。
+//!   WAV 恢复的成品仍在会话目录内，故 WAV 路由不触发清理（避免删除录音本身）。
 //!
 //! 清单格式：`manifest.json` 为受限 JSON（本模块内手写序列化/解析——仓库保持零新增
 //! 外部依赖；字段集即 [`SessionManifest`] schema v1，未知/畸形内容 → 解析失败）。
@@ -99,6 +103,8 @@ pub struct RecoverableSession {
 pub struct RecoveryOutcome {
     /// route_id → 成品（output_dir 根，REQ-24 命名；不含 WAV 路由）。
     pub route_finals: Vec<(String, PathBuf)>,
+    /// 参与收尾的封口段。`keep_segments=true` 时保留；默认收尾成功后随会话目录清理
+    /// （路径不再存在）。
     pub segments_used: Vec<PathBuf>,
     pub discarded: Vec<PathBuf>,
     /// WAV 崩溃残留就地封口。
@@ -682,8 +688,23 @@ fn repair_wavs_in(dir: &Path) -> Result<Vec<PathBuf>, RecoveryError> {
 }
 
 /// 崩溃收尾（幂等）：清单可读 + 会话非活动 → 逐路收尾；成品落 output_dir 根
-/// （REQ-24 命名；安全提交）。原段永不删除。
+/// （REQ-24 命名；安全提交）。等价于 [`finalize_session_with_options`] 且
+/// `keep_segments=false`（M14c 默认策略：成品验证成功后清理会话目录）。
 pub fn finalize_session(session_dir: &Path) -> Result<RecoveryOutcome, RecoveryError> {
+    finalize_session_with_options(session_dir, false)
+}
+
+/// M14c：崩溃收尾 + 显式保留策略（命令层把设置 `keep_segments` 透传至此）。
+///
+/// `keep_segments == false`（默认设置）：全部路由收尾成功且成品校验通过后递归清理
+/// `<output_dir>/.screenrec_tmp/<session_id>`；`true`：保留原段（调试/排查/幂等重试）。
+/// 删除失败只记录日志、不改变收尾成功归因。失败/活动拒绝/清单损坏路径不删除原段。
+/// WAV 路由的成品（修复后的 WAV）位于会话目录内，故只要本次收尾修复了 WAV 就不清理，
+/// 避免删除录音本身。
+pub fn finalize_session_with_options(
+    session_dir: &Path,
+    keep_segments: bool,
+) -> Result<RecoveryOutcome, RecoveryError> {
     if !session_dir.is_dir() {
         return Err(RecoveryError::NotFound {
             dir: session_dir.to_path_buf(),
@@ -712,9 +733,16 @@ pub fn finalize_session(session_dir: &Path) -> Result<RecoveryOutcome, RecoveryE
 
     for route_idx in 0..manifest.routes.len() {
         let route = manifest.routes[route_idx].clone();
-        // 幂等：清单已记成品且仍存在 → 直接复用（无操作）。
+        // 幂等：清单已记成品且存在 → 先按收尾同口径复核，再复用（无操作）。
+        // 损坏/零字节成品不得视为成功：保留原段并报错，避免默认清理删掉原段。
         if let Some(f) = &route.final_path {
             if f.exists() {
+                crate::finalize::verify_final_media(&ffprobe, f).map_err(|e| {
+                    fail(format!(
+                        "清单已记成品但校验失败（route {}）：{e}；原段保留、拒绝清理",
+                        route.route_id
+                    ))
+                })?;
                 outcome
                     .route_finals
                     .push((route.route_id.clone(), f.clone()));
@@ -780,14 +808,8 @@ pub fn finalize_session(session_dir: &Path) -> Result<RecoveryOutcome, RecoveryE
             sanitize_target_name(&route.identity.name)
         );
         let final_path = next_available(&output_root, &stem, "mkv");
-        let verify = |p: &Path| -> Result<(), String> {
-            let ok = is_valid_mkv(Some(&ffprobe), p);
-            if ok {
-                Ok(())
-            } else {
-                Err(format!("成品校验失败（{}：0 字节/不可解析）", p.display()))
-            }
-        };
+        let verify =
+            |p: &Path| -> Result<(), String> { crate::finalize::verify_final_media(&ffprobe, p) };
         if let Err(e) = safe_commit(&tmp, &final_path, verify) {
             let _ = std::fs::remove_file(&tmp);
             return Err(match e {
@@ -809,7 +831,28 @@ pub fn finalize_session(session_dir: &Path) -> Result<RecoveryOutcome, RecoveryE
         manifest.routes[route_idx].state = "final".into();
         save_manifest_atomic(session_dir, &manifest)?;
     }
+    // M14c：全部路由收尾成功（MKV 成品已由 safe_commit 校验；WAV 已就地封口）→
+    // 按保留策略清理会话目录。WAV 恢复的成品在会话目录内，不能清理。
+    if !outcome.route_finals.is_empty() && outcome.repaired_wavs.is_empty() {
+        cleanup_session_after_finalize(session_dir, keep_segments);
+    }
     Ok(outcome)
+}
+
+/// M14c：恢复收尾成功后按保留策略清理会话目录（与正常收尾共用 keep_segments 语义）。
+///
+/// `keep_segments=true`：保留原段；false：递归删除会话目录。删除失败（文件占用/权限等）
+/// 只记录日志并保留现场——调用方不得因此把收尾判失败（成品已提交）。
+fn cleanup_session_after_finalize(session_dir: &Path, keep_segments: bool) {
+    if keep_segments || !session_dir.is_dir() {
+        return;
+    }
+    if let Err(e) = discard_session(session_dir) {
+        eprintln!(
+            "[recovery] 恢复收尾成功，但清理原段失败（保留会话目录 {}）：{e:?}",
+            session_dir.display()
+        );
+    }
 }
 
 /// 显式丢弃：删除整个会话目录（含段与清单）。不存在 → `NotFound`。
@@ -836,4 +879,192 @@ pub(crate) fn create_session_dir(
     std::fs::create_dir_all(&dir)
         .map_err(|e| fail(format!("创建会话临时目录失败（{}）：{e}", dir.display())))?;
     Ok(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 生成一个能通过收尾同口径校验（ffprobe 可解析、时长 > 0）的最小 MKV。
+    fn write_valid_final(path: &Path) {
+        let ffmpeg = crate::sidecar::ffmpeg_exe().expect("定位锁定 ffmpeg");
+        let st = Command::new(ffmpeg)
+            .args([
+                "-hide_banner",
+                "-nostdin",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=64x64:r=10:d=0.2",
+                "-c:v",
+                "mpeg4",
+                "-f",
+                "matroska",
+            ])
+            .arg(path)
+            .status()
+            .expect("spawn 锁定 ffmpeg 生成测试成品");
+        assert!(st.success(), "生成测试成品失败（{st}）");
+    }
+
+    /// M14c 单元测试夹具：`<temp>/.screenrec_tmp/sess-1` + output_dir 根下已提交成品。
+    /// 成品由锁定 ffmpeg 生成（通过真实校验）；收尾走「清单已记成品且仍存在」幂等分支，
+    /// 无需实际执行 concat。
+    fn temp_final_session(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "sr_m14c_recovery_cleanup_{tag}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let session = root.join(SESSION_TMP_DIRNAME).join("sess-1");
+        std::fs::create_dir_all(&session).expect("创建会话目录");
+        let final_path = root.join("20261018_120000_Target.mkv");
+        write_valid_final(&final_path);
+        std::fs::write(session.join("out0_00000.mkv"), b"segment-bytes").expect("写原段占位");
+        let manifest = SessionManifest {
+            version: 1,
+            session_id: "sess-1".into(),
+            created_at_unix_ms: 0,
+            start_qpc: 0,
+            routes: vec![ManifestRoute {
+                route_id: "route-1".into(),
+                identity: RouteIdentity {
+                    pid: 0,
+                    created_at_unix_ms: 0,
+                    name: "Target".into(),
+                    path: PathBuf::from("test"),
+                },
+                streams: vec!["v".into(), "a".into()],
+                segments: Vec::new(),
+                state: "final".into(),
+                final_path: Some(final_path.clone()),
+            }],
+        };
+        save_manifest_atomic(&session, &manifest).expect("写会话清单");
+        (root, session, final_path)
+    }
+
+    #[test]
+    fn recovery_finalize_cleanup_removes_session_dir_by_default() {
+        let (root, session, final_path) = temp_final_session("default");
+        let outcome = finalize_session(&session).expect("M14c：幂等收尾基线应成功");
+        assert_eq!(outcome.route_finals.len(), 1);
+        assert!(
+            final_path.exists(),
+            "清理只删会话目录，成品必须保留（{}）",
+            final_path.display()
+        );
+        assert!(
+            !session.exists(),
+            "M14c 默认：恢复收尾成功后应递归删除会话目录（{}）",
+            session.display()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_finalize_rejects_corrupt_recorded_final_and_keeps_session() {
+        let (root, session, final_path) = temp_final_session("corrupt");
+        std::fs::write(&final_path, b"").expect("写零字节成品");
+        let segment = session.join("out0_00000.mkv");
+
+        let err = finalize_session(&session)
+            .expect_err("清单已记成品但成品零字节：不得判收尾成功，更不得清理原段");
+        let detail = match &err {
+            RecoveryError::RecoveryFailed { detail } => detail.clone(),
+            other => panic!("应报 RecoveryFailed（得到 {other:?}）"),
+        };
+        assert!(
+            detail.contains("成品校验失败"),
+            "错误应可见地指出成品校验失败（得到 {detail}）"
+        );
+        assert!(
+            detail.contains(&final_path.display().to_string()),
+            "错误应包含损坏成品路径（得到 {detail}）"
+        );
+        assert!(
+            session.exists() && session.join(MANIFEST_FILE).exists(),
+            "校验失败必须保留会话目录/清单（{}）",
+            session.display()
+        );
+        assert!(
+            segment.exists(),
+            "校验失败必须保留原段（{}）",
+            segment.display()
+        );
+        assert_eq!(
+            std::fs::metadata(&final_path).expect("成品元数据").len(),
+            0,
+            "损坏成品不得被静默改写/删除"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_finalize_cleanup_keeps_session_dir_when_requested() {
+        let (root, session, final_path) = temp_final_session("keep");
+        let outcome =
+            finalize_session_with_options(&session, true).expect("M14c：keep=true 收尾应成功");
+        assert_eq!(outcome.route_finals[0].1, final_path);
+        assert!(
+            session.join(MANIFEST_FILE).exists(),
+            "M14c keep_segments=true：会话目录/清单应保留（{}）",
+            session.display()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_finalize_cleanup_retains_wav_only_session() {
+        let root = std::env::temp_dir().join(format!(
+            "sr_m14c_recovery_cleanup_wav_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let session = root.join(SESSION_TMP_DIRNAME).join("sess-wav");
+        std::fs::create_dir_all(&session).expect("创建会话目录");
+        let wav = session.join("crash.wav");
+        let mut writer = sr_audio::wav::WavWriter::create(&wav, 48_000, 2).expect("创建 WAV 写器");
+        writer.write_silence_frames(480).expect("写 WAV 数据");
+        writer.finalize().expect("封口 WAV");
+        drop(writer); // 关闭写句柄（活动探测要求独占打开成功）
+        let manifest = SessionManifest {
+            version: 1,
+            session_id: "sess-wav".into(),
+            created_at_unix_ms: 0,
+            start_qpc: 0,
+            routes: vec![ManifestRoute {
+                route_id: "route-wav".into(),
+                identity: RouteIdentity {
+                    pid: 0,
+                    created_at_unix_ms: 0,
+                    name: "Wav".into(),
+                    path: PathBuf::from("test"),
+                },
+                streams: vec!["wav".into()],
+                segments: Vec::new(),
+                state: "recording".into(),
+                final_path: None,
+            }],
+        };
+        save_manifest_atomic(&session, &manifest).expect("写会话清单");
+
+        let outcome = finalize_session_with_options(&session, false).expect("WAV 残留会话应可收尾");
+        assert_eq!(outcome.repaired_wavs, vec![wav.clone()]);
+        assert!(outcome.route_finals.is_empty());
+        assert!(
+            wav.exists(),
+            "M14c：WAV 恢复的成品在会话目录内，默认策略不得删除（{}）",
+            wav.display()
+        );
+        assert!(
+            session.exists(),
+            "M14c：WAV 会话不得被恢复清理删除（{}）",
+            session.display()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

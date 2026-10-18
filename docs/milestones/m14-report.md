@@ -214,3 +214,71 @@ M14 同一套清理/保留语义。
 - 未改 PRD / `specs/002-*` / `docs/prd/002-*` / `SR_DIAG_AV`；未执行 `git`；未重建
   安装包。
 - §6 未决 1（纯录音未纳入清理）由本节闭环。
+
+## 8. M14c 增量（2026-10-18）：恢复收尾纳入同一保留策略
+
+L3 实测发现恢复路径（`recover_sessions` → `finalize_session`）成功后原段仍残留
+（会话 `1792310265895_0` 恢复出成品后目录仍在）；本增量把恢复收尾纳入 M14/M14b 的
+`keep_segments` 策略。
+
+- **语义**：恢复收尾**全部路由成功且 MKV 成品校验通过后**，默认递归删除
+  `<output_dir>/.screenrec_tmp/<session_id>`；`keep_segments=true` 时保留原段。
+  删除失败仅 stderr 日志、不改变收尾成功归因（成品已提交）。失败/活动拒绝/清单损坏
+  路径语义不变（不删除原段）。
+- **WAV 边界**：WAV 恢复的成品是就地封口的会话内 WAV（不像正常纯录音会先安全提交到
+  输出根）；若按默认策略删目录会丢录音，故 WAV 路由（`repaired_wavs` 非空）不触发
+  清理，保持 M11 恢复语义。
+- **实现**：
+  - `recovery.rs` 新增 `finalize_session_with_options(session_dir, keep_segments)`；
+    既有 `finalize_session` 保持签名并委托 `false`（默认清理）。
+  - 全部路由收尾成功后调用 `cleanup_session_after_finalize`（`discard_session` 失败
+    仅日志，函数返回 `()`）；默认清理后再次收尾返回 `NotFound`（需幂等重试/核对原段
+    时用 `keep_segments=true`）。
+  - `commands::finalize_session` 读取设置快照并把 `settings.keep_segments` 透传。
+- **L1**（`cargo test -p sr-pipeline --lib`）：新增
+  `recovery::tests::recovery_finalize_cleanup_removes_session_dir_by_default`、
+  `..._keeps_session_dir_when_requested`、`..._retains_wav_only_session`；本包
+  **11/11** 通过（含 M14/M14b/route 既有 7 条）。
+- **红→绿（L1）**：API 引入前编译红（`finalize_session_with_options` 不存在）；首次
+  运行 10 passed / 1 failed——`retains_wav_only_session` 因测试夹具 `WavWriter`
+  写句柄未关闭，会话被活动探测判 `Active`；`drop(writer)` 后 **11/11** 绿
+  （`m14c-red-green-pipeline-lib.log`）。
+- **workspace L1**：`cargo test --workspace` exit 0（`m14c-workspace-L1.log`）。
+- **L2 回归**（环境同 §4：Windows 11 25H2 build 26200.9711；串行、
+  `SESSIONNAME=Console`、`SetThreadExecutionState` 保持唤醒；均 0 failed）：
+  `recovery` **4/4**（新增 44.1k/96k 恢复子集；S3 断言默认清理会话目录；S2/R/R2/
+  disk-full 用 `keep=true` 保留原段核对）、`m11_audio_only_recovery` **2/2**
+  （WAV 恢复仍保留会话/可读）、`route` **5/5**；日志 `m14c-verify-*.log`。
+- 未改 PRD / `specs/002-*` 需求文本 / `SR_DIAG_AV`；未执行 `git`；未重建安装包。
+- 未决：删除失败仍为 best-effort（沿用 M14 §6 未决 2，无确定性故障注入）。
+
+## 9. M15c/acc-7 增量（2026-10-18）：恢复清理前复核成品
+
+acc-7 验收发现 M14c 恢复路径的幂等分支只以 `final_path.exists()` 判成功
+（`recovery.rs:735-741` 原实现）：若清单已记成品但文件被截断/零字节，收尾会返回成功，
+随后默认清理（`keep_segments=false`）递归删除会话目录，**原段随损坏成品一起丢失**。
+
+- **修复（生产口径）**：
+  - `crates/sr-pipeline/src/finalize.rs` 新增 `pub(crate) verify_final_media(ffprobe, p)`：
+    文件存在且可读 + 长度 > 0 + ffprobe 可解析 + 容器时长 > 0；错误串包含路径与原因。
+  - `recovery.rs` 幂等分支在复用 `final_path` 前调用该函数；失败返回
+    `RecoveryError::RecoveryFailed`（detail：`清单已记成品但校验失败（route …）：…；
+    原段保留、拒绝清理`），早退使清理不会执行，会话目录/原段保留，可人工处置损坏
+    成品后重新恢复。
+  - `safe_commit` 的提交前校验闭包改用同一 `verify_final_media`（成品提交与恢复复用
+    完全同口径，含 `duration > 0`）。
+  - WAV-only 保留边界不变（`repaired_wavs` 非空仍不清理）。
+- **测试夹具修正**：原单元夹具用 `b"final-bytes"` 冒充成品，真实校验下必然失败；
+  改为用锁定 ffmpeg 生成 0.2s 合法 MKV（`write_valid_final`），生产校验无测试绕过。
+- **红→绿**：新增确定性单元回归
+  `recovery::tests::recovery_finalize_rejects_corrupt_recorded_final_and_keeps_session`
+  （清单记零字节 `final_path` → 必须报错、会话/原段保留、损坏成品不改写）。
+  修复前 **红**：收尾返回 `Ok(RecoveryOutcome)` 并删除会话目录
+  （`m15c-red-recovery.log`）；修复后 **绿**：1/1（`m15c-green-recovery-unit.log`）。
+- **L2 回归**：新增 `it_recovery_corrupt_recorded_final_keeps_session`（同一场景，
+  合成段 + 锁定 ffmpeg），随 `recovery` 套件 **5 passed / 0 failed**（49.68s；
+  `SESSIONNAME=Console`、`--test-threads=1`、`SetThreadExecutionState` 保持唤醒）；
+  日志 `m15c-verify-recovery.log`。route 抽查 `it_single_route_frames_nonblank`
+  **1/1**（8.66s，`m15c-verify-route.log`）；workspace L1 `cargo test --workspace`
+  exit 0（`m15c-workspace-L1.log`）。
+- 未改 PRD / `specs/*` 需求语义 / `SR_DIAG_AV`；未执行 `git`；未重建安装包。

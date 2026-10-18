@@ -4,7 +4,7 @@
 //!
 //! 基准命令（specs/001-screen-recorder.md §3.3；S5 修订：force_key_frames、0 字节段排除）：
 //! `ffmpeg -hide_banner -nostdin -f rawvideo -pix_fmt nv12 -s {W}x{H} -framerate {fps}
-//!  -i {vpipe} [-f f32le -ar 48000 -ac 2 -i {apipe}...] -map 0:v [-map k:a...]
+//!  -i {vpipe} [-f f32le -ar {out_rate} -ac 2 -i {apipe}...] -map 0:v [-map k:a...]
 //!  -c:v {encoder} -b:v 12M -g {2*fps} -force_key_frames expr:gte(t,n_forced*{segment_secs})
 //!  [-c:a aac -b:a 192k] -f segment -segment_time {secs} -reset_timestamps 1
 //!  -segment_format matroska -segment_list {list} [-segment_list_type ffconcat] {pattern}`
@@ -22,10 +22,12 @@ pub struct VideoPipeSpec {
     pub pipe_path: String,
 }
 
-/// 音频输入管道规格（f32le/48k/立体声固定，§3.3）。
+/// 音频输入管道规格（f32le/立体声；采样率 = 成品输出率，M15/REQ-3 参数化）。
 #[derive(Debug, Clone)]
 pub struct AudioPipeSpec {
     pub pipe_path: String,
+    /// 输出率（`-ar`；44.1k/48k/88.2k/96k）。
+    pub sample_rate: u32,
 }
 
 /// 构建 ffmpeg 编码 argv（不含 exe 本体；含 -hide_banner/-nostdin）。
@@ -54,13 +56,13 @@ pub fn build_encode_args(
         video.pipe_path.clone(),
     ]);
 
-    // 音频输入（f32le/48k/立体声；每输入管道独立）。
+    // 音频输入（f32le/{输出率}/立体声；每输入管道独立；M15/REQ-3 `-ar` 参数化）。
     for a in audio {
         args.extend([
             "-f".into(),
             "f32le".into(),
             "-ar".into(),
-            "48000".into(),
+            a.sample_rate.to_string(),
             "-ac".into(),
             "2".into(),
             "-i".into(),

@@ -41,7 +41,7 @@ fn get_settings(state: State<'_, SettingsState>) -> settings::Settings {
     state.snapshot()
 }
 
-/// §3.3：`set_settings(Settings)`——校验 → 原子落盘 → 更新内存。
+/// §3.3：`set_settings(Settings)`——归一化 → 校验 → 原子落盘 → 更新内存。
 /// 失败（校验/写盘）时内存保持不变，返回错误消息给前端。
 #[tauri::command]
 fn set_settings(
@@ -49,12 +49,25 @@ fn set_settings(
     state: State<'_, SettingsState>,
     settings: settings::Settings,
 ) -> Result<(), String> {
-    settings.validate()?;
     let dir = app
         .path()
         .app_local_data_dir()
         .map_err(|e| format!("解析设置目录失败: {e}"))?;
-    settings::save(&dir, &settings).map_err(|e| format!("写入设置失败: {e}"))?;
+    persist_settings(&dir, &state, settings)
+}
+
+/// `set_settings` 同步实现（归一化 → 校验 → 落盘 → 更新内存）。
+///
+/// REQ-1：`audio_sample_rate` 与磁盘加载复用同一归一化（`Settings::normalize`）；
+/// 写入的新值只影响后续启动快照，已取得的快照（`SettingsState::snapshot`）不变。
+pub(crate) fn persist_settings(
+    dir: &std::path::Path,
+    state: &SettingsState,
+    mut settings: settings::Settings,
+) -> Result<(), String> {
+    settings.normalize();
+    settings.validate()?;
+    settings::save(dir, &settings).map_err(|e| format!("写入设置失败: {e}"))?;
     *state.0.lock().expect("settings lock") = settings;
     Ok(())
 }
@@ -168,6 +181,8 @@ pub fn run() {
             commands::list_targets,
             commands::list_audio_sources,
             commands::list_audio_devices,
+            // M15/REQ-2：端点原生混音率（UI 只读展示；失败返回 None）
+            commands::get_endpoint_mix_rate,
             // §3.3 录制/停止（全成功或回滚；停止返回「已请求停止」）
             commands::start_routes,
             commands::stop_route,
@@ -190,4 +205,62 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "sr_m15_settings_entry_{tag}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    /// REQ-1：`set_settings` 与磁盘加载复用同一归一化；录制启动快照不随保存变更。
+    #[test]
+    fn unit_settings_sample_rate_set_settings_normalizes_and_snapshot_is_stable() {
+        let dir = temp_dir("entry");
+        let state = SettingsState(Mutex::new(settings::Settings::default()));
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.audio_sample_rate, 48_000, "默认 48000");
+
+        let mut next = settings::Settings::default();
+        next.audio_sample_rate = 12_345; // 非法档位：set_settings 入口应归一化
+        next.fps = 60;
+        persist_settings(&dir, &state, next).expect("set_settings 入口应成功");
+        let loaded = settings::load_or_default(&dir);
+        assert_eq!(
+            loaded.audio_sample_rate, 48_000,
+            "REQ-1：set_settings 入口应与磁盘加载同归一化（落盘值）"
+        );
+        assert_eq!(loaded.fps, 60, "归一化不得重置其余字段");
+        assert_eq!(
+            state.snapshot().audio_sample_rate,
+            48_000,
+            "内存状态应同样归一化"
+        );
+        assert_eq!(
+            snapshot.audio_sample_rate, 48_000,
+            "REQ-1：启动快照不随保存变更"
+        );
+
+        let mut next = settings::Settings::default();
+        next.audio_sample_rate = 96_000;
+        persist_settings(&dir, &state, next).expect("第二次保存");
+        assert_eq!(
+            snapshot.audio_sample_rate, 48_000,
+            "REQ-1：再次保存也不得改变已取得的启动快照"
+        );
+        assert_eq!(
+            state.snapshot().audio_sample_rate,
+            96_000,
+            "新快照反映最新保存值"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

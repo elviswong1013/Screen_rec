@@ -2,7 +2,8 @@
 //!
 //! - **流式写**：44 字节头部占位 + s16 数据追加；正常停止 `finalize` 封口
 //!   （RIFF/data 长度回填）。未封口文件即崩溃残留形态——[`repair_wav`] 的目标场景。
-//! - **格式**：48kHz/s16/立体声（管线的 s16 归档；帧 = 4 字节）。
+//! - **格式**：输出率（M15/REQ-1：44.1k/48k/88.2k/96k）s16/立体声（管线的 s16
+//!   归档；帧 = 4 字节）。写入方负责把捕获样本重采样到该率。
 //! - **[`repair_wav`]**：头部重写（RIFF/data 长度封口）+ 尾部不完整样本裁切；
 //!   **幂等**（二次调用无操作，`trimmed_bytes=0`、文件不变）。
 //! - **RIFF 4GiB 上限**：数据段超过 u32 编码上限时写入明确失败（超限分段策略属
@@ -34,7 +35,7 @@ pub enum WavError {
 /// 崩溃修复结果。
 #[derive(Debug, Clone)]
 pub struct WavRepair {
-    /// 修复后完整帧数（s16 立体声；frames/48000 ≈ 文件时长）。
+    /// 修复后完整帧数（s16 立体声；frames/头部采样率 ≈ 文件时长）。
     pub frames: u64,
     /// 尾部不完整样本裁切字节数（0..3）。
     pub trimmed_bytes: u64,
@@ -71,7 +72,7 @@ fn wav_header(data_bytes: u32, sample_rate: u32, channels: u16) -> [u8; HEADER_B
     h
 }
 
-/// 流式 WAV 写（48kHz/s16/立体声；`finalize` 前文件为「未封口」崩溃残留形态）。
+/// 流式 WAV 写（输出率/s16/立体声；`finalize` 前文件为「未封口」崩溃残留形态）。
 pub struct WavWriter {
     file: File,
     path: PathBuf,

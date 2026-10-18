@@ -109,6 +109,9 @@ function makeReal() {
     listTargets: () => invoke('list_targets'),
     listAudioSources: () => invoke('list_audio_sources'),
     listAudioDevices: () => invoke('list_audio_devices'),
+    // M15/REQ-2：端点原生混音率（独立于 probe_capabilities；失败返回 null）。
+    // 显式透传返回值，不做 normalizeProbe 式字段挑选（未知值不得推导重采样比率）。
+    getEndpointMixRate: (deviceId) => invoke('get_endpoint_mix_rate', { deviceId: deviceId ?? null }),
     // `_ui_*` 字段为 mock 展示用元数据（标签/音轨名），发送前剥离，避免污染契约。
     startRoutes: (routes) => invoke('start_routes', { routes: stripUiMeta(routes) }),
     stopRoute: (routeId) => invoke('stop_route', { routeId }),
@@ -147,7 +150,13 @@ function makeReal() {
 // ---------------------------------------------------------------------------
 function makeMock() {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-  const scenario = new URLSearchParams(location.search).get('scenario') || '';
+  const params = new URLSearchParams(location.search);
+  const scenario = params.get('scenario') || '';
+  // M15/REQ-2 行为 runner 注入：原生率档位 / 未知 / 查询失败。
+  const nativeRate = Number(params.get('native_rate')) || 48_000;
+  const micRate = Number(params.get('mic_rate')) || nativeRate;
+  const nativeUnknown = params.get('native_unknown') === '1';
+  const nativeFail = params.get('native_fail') === '1';
   const now = Date.now();
 
   // -- 示例数据（与 normalizeProbe 归一化后的内部形状一致） -------------------
@@ -206,6 +215,7 @@ function makeMock() {
   const defaultSettings = () => ({
     output_dir: 'C:\\Users\\demo\\Videos\\Screen_rec',
     fps: 30,
+    audio_sample_rate: 48_000,
     cursor: true,
     default_audio_mode: 'isolated',
     mic_device: capsDegraded ? null : 'mic-realtek',
@@ -312,6 +322,19 @@ function makeMock() {
     async listTargets() { await wait(600); return structuredClone({ monitors, windows }); },
     async listAudioSources() { await wait(400); return structuredClone(audioSources); },
     async listAudioDevices() { await wait(200); return structuredClone(audioDevices); },
+
+    // M15/REQ-2：mock 与 real 同形返回 {rate, kind, device_name}；null = 未知。
+    async getEndpointMixRate(deviceId) {
+      await wait(80);
+      if (nativeFail) throw 'E_ENDPOINT_QUERY：端点混音率查询失败';
+      if (nativeUnknown) return null;
+      const kind = deviceId ? 'capture' : 'render';
+      const rate = deviceId ? micRate : nativeRate;
+      const name = deviceId
+        ? (audioDevices.find((d) => d.id === deviceId)?.name || deviceId)
+        : '默认渲染端点（mock）';
+      return { rate, kind, device_name: name };
+    },
 
     async startRoutes(routeCfgs) {
       await wait(800);
@@ -432,6 +455,9 @@ function makeMock() {
       if (!next.output_dir || !next.output_dir.trim()) throw 'output_dir 不得为空';
       if (!next.fps) throw 'fps 不得为 0';
       if (!next.segment_secs) throw 'segment_secs 不得为 0';
+      if (![44_100, 48_000, 88_200, 96_000].includes(next.audio_sample_rate)) {
+        next.audio_sample_rate = 48_000; // REQ-1：与后端同归一化口径
+      }
       settings = structuredClone(next);
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
       return null;

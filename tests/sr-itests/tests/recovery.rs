@@ -20,8 +20,10 @@
 //! - `scan_sessions(output_dir) -> Vec<RecoverableSession>`：目录级重扫核对
 //!   （「段完成但清单未更新」不丢）；排除 0 字节/坏 EBML/活动文件；会话活跃 → `active=true`。
 //! - `finalize_session(dir) -> Result<RecoveryOutcome, RecoveryError>`：幂等（二次调用
-//!   无操作）；成品（REQ-24 命名）位于 output_dir 根；**原段永不删除**；清单损坏/缺失 →
-//!   `RecoveryFailed`（E_RECOVERY_FAILED）且保留原段；活跃会话 → `Active` 拒绝。
+//!   无操作）；成品（REQ-24 命名）位于 output_dir 根；M14c：成功且成品校验通过后按
+//!   `keep_segments` 策略清理/保留原段（`finalize_session` 默认清理；
+//!   `finalize_session_with_options(dir, true)` 保留）；失败/清单损坏/活跃拒绝路径
+//!   保留原段（`RecoveryFailed`/`Active`）；WAV 恢复的成品在会话目录内，不触发清理。
 //! - `discard_session(dir)`：删除会话目录；不存在 → `NotFound`。
 //! - 磁盘写失败（含 ENOSPC 类）→ `RouteError::DiskFull`（E_DISK_FULL，§3.4/§3.5：安全停止、
 //!   保留原段、收尾可重试）。
@@ -44,9 +46,9 @@ use common::*;
 use sr_audio::wav::repair_wav;
 use sr_pipeline::naming::sanitize_target_name;
 use sr_pipeline::recovery::{
-    discard_session, finalize_session, load_manifest, save_manifest_atomic, scan_sessions,
-    ManifestRoute, ManifestSegment, RecoverableSession, RecoveryError, RecoveryOutcome,
-    RouteIdentity, SessionManifest,
+    discard_session, finalize_session, finalize_session_with_options, load_manifest,
+    save_manifest_atomic, scan_sessions, ManifestRoute, ManifestSegment, RecoverableSession,
+    RecoveryError, RecoveryOutcome, RouteIdentity, SessionManifest,
 };
 use sr_pipeline::route::{start_route, RouteConfig, RouteError, RouteTarget, VideoCfg};
 
@@ -129,6 +131,21 @@ fn probe_duration(path: &Path) -> f64 {
         .unwrap_or_else(|| panic!("应能读出容器时长（{} 未封口/损坏？）", path.display()))
 }
 
+/// 首音轨形状（`codec,sample_rate,channels`；M15b/REQ-5 恢复率域断言）。
+fn probe_audio_shape(path: &Path) -> String {
+    ffprobe_csv(
+        path,
+        &[
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name,sample_rate,channels",
+            "-of",
+            "csv=p=0",
+        ],
+    )
+}
+
 /// 恢复成品解码：**容忍告警**（截断尾段回收会带 "File ended prematurely"），要求 exit 0。
 fn decode_exit0(path: &Path) -> bool {
     let out = Command::new(ffbin("ffmpeg.exe"))
@@ -175,10 +192,15 @@ fn as_set(paths: &[PathBuf]) -> HashSet<PathBuf> {
 
 // ─────────────────────────── 合成素材（锁定构建） ───────────────────────────
 
-/// 合成一个「1 视频 + 1 音轨」的小段（mpeg4/aac MKV）。
+/// 合成一个「1 视频 + 1 音轨」的小段（mpeg4/aac MKV；48k 基线）。
 fn mk_seg(path: &Path, secs: f64, freq: u32) {
+    mk_seg_with_rate(path, secs, freq, 48_000);
+}
+
+/// M15b/REQ-5：合成指定输出率的小段（恢复成品应保留该音轨采样率）。
+fn mk_seg_with_rate(path: &Path, secs: f64, freq: u32, rate: u32) {
     let vf = format!("testsrc2=size=320x180:rate=15:duration={secs}");
-    let af = format!("sine=frequency={freq}:sample_rate=48000:duration={secs}");
+    let af = format!("sine=frequency={freq}:sample_rate={rate}:duration={secs}");
     run_ffmpeg(
         &[
             "-y",
@@ -200,6 +222,8 @@ fn mk_seg(path: &Path, secs: f64, freq: u32) {
             "mpeg4",
             "-q:v",
             "5",
+            "-ac",
+            "2",
             "-c:a",
             "aac",
             "-b:a",
@@ -645,6 +669,8 @@ fn it_crash_kill_matrix_recovery_state_machine() {
     println!("[recovery] S1 manifest 原子写/往返 OK");
 
     // S2：陈旧清单 + 目录重扫 + 截断尾段回收 + 幂等收尾 + 原段保留
+    // M14c：本相位核对原段/幂等重试，显式 keep_segments=true（默认成功后清理会话目录）；
+    // 默认清理由 L1 + 本套件 S3（合成会话）覆盖。
     let s_a = tmp_root.join("sess-A");
     fs::create_dir_all(&s_a).expect("创建会话 A");
     let a0 = s_a.join("out0_00000.mkv");
@@ -687,7 +713,8 @@ fn it_crash_kill_matrix_recovery_state_machine() {
         "最高序号的可解析段应识别为崩溃尾段"
     );
 
-    let fin: RecoveryOutcome = finalize_session(&s_a).expect("崩溃残留应可收尾（重扫核对）");
+    let fin: RecoveryOutcome = finalize_session_with_options(&s_a, true)
+        .expect("崩溃残留应可收尾（重扫核对；M14c keep=true 以核对原段）");
     assert_eq!(fin.route_finals.len(), 1, "恰 1 条路由成品");
     let (route_id, final_path) = &fin.route_finals[0];
     assert_eq!(route_id, "route-a");
@@ -753,7 +780,7 @@ fn it_crash_kill_matrix_recovery_state_machine() {
     // 幂等：二次收尾无操作（同一成品、字节不变、根目录 mkv 数不变）
     let bytes1 = fs::read(final_path).expect("读成品");
     let mkv_count1 = count_mkv(&root);
-    let fin2 = finalize_session(&s_a).expect("收尾应幂等（二次调用成功）");
+    let fin2 = finalize_session_with_options(&s_a, true).expect("收尾应幂等（二次调用成功）");
     assert_eq!(
         fin2.route_finals[0].1, *final_path,
         "幂等收尾应复用既有成品路径"
@@ -804,6 +831,11 @@ fn it_crash_kill_matrix_recovery_state_machine() {
     assert!(
         (dur_b - 2.0).abs() <= SEG_DUR_TOL,
         "成品时长应≈封口段和（排除 0 字节段；得到 {dur_b:.3}s）"
+    );
+    assert!(
+        !s_b.exists(),
+        "M14c 默认：恢复收尾成功后应清理会话目录（{}）",
+        s_b.display()
     );
 
     let s_c = tmp_root.join("sess-C");
@@ -1001,7 +1033,8 @@ fn it_crash_kill_matrix_recovery_state_machine() {
         s.sealed_segments.len()
     );
     let sealed_before: Vec<PathBuf> = s.sealed_segments.clone();
-    let fin = finalize_session(&s.dir).expect("崩溃会话应可收尾");
+    // M14c：崩溃收尾核对原段保留 + 幂等重试，显式 keep=true（默认清理另由 S3/L1 覆盖）。
+    let fin = finalize_session_with_options(&s.dir, true).expect("崩溃会话应可收尾");
     assert_eq!(fin.route_finals.len(), 1, "单路会话应恰 1 个成品");
     let (rid, cfinal) = &fin.route_finals[0];
     assert!(!rid.is_empty(), "成品 route_id 不得为空");
@@ -1028,7 +1061,7 @@ fn it_crash_kill_matrix_recovery_state_machine() {
     }
     let cbytes = fs::read(cfinal).expect("读崩溃恢复成品");
     let ccount = count_mkv(&child_out);
-    let fin2 = finalize_session(&s.dir).expect("崩溃收尾应幂等");
+    let fin2 = finalize_session_with_options(&s.dir, true).expect("崩溃收尾应幂等");
     assert_eq!(fin2.route_finals[0].1, *cfinal);
     assert_eq!(
         fs::read(cfinal).expect("重读"),
@@ -1083,7 +1116,8 @@ fn it_crash_kill_matrix_recovery_state_machine() {
         s2.sealed_segments
     );
     let sealed2 = s2.sealed_segments.clone();
-    let fin2b = finalize_session(&s2.dir).expect("编码死亡后恢复收尾应成功（同进程可重试）");
+    let fin2b = finalize_session_with_options(&s2.dir, true)
+        .expect("编码死亡后恢复收尾应成功（同进程可重试）");
     let final2 = &fin2b.route_finals[0].1;
     assert!(
         final2.exists() && decode_exit0(final2),
@@ -1199,8 +1233,9 @@ fn it_fault_injection_disk_full() {
     }
     println!("[diskfull] 失败后保留封口段 {} 个", sealed.len());
 
-    // ── 收尾可重试：恢复收尾应成功且不删原段 ──
-    let fin = finalize_session(&s.dir).expect("解除写失败后恢复收尾应成功（可重试；§3.5）");
+    // ── 收尾可重试：恢复收尾应成功且不删原段（M14c：核对原段用 keep=true；默认成功后清理）──
+    let fin = finalize_session_with_options(&s.dir, true)
+        .expect("解除写失败后恢复收尾应成功（可重试；§3.5）");
     assert!(!fin.route_finals.is_empty(), "应产出成品");
     let final_path = &fin.route_finals[0].1;
     assert!(
@@ -1217,4 +1252,140 @@ fn it_fault_injection_disk_full() {
     discard_session(&s.dir).expect("恢复后丢弃会话应成功");
 
     let _ = fs::remove_dir_all(&out);
+}
+
+// ─────────────────────────── 用例 3：M15b/REQ-5 恢复率域子集 ───────────────────────────
+
+/// 合成崩溃残留（2 段，尾段截断）→ 恢复收尾 → 成品音轨保留所选输出率。
+/// 复用 S2/S3 的目录重扫与封口判定；不依赖 WGC/真实开录（确定性、快速）。
+fn recovery_sample_rate_case(rate: u32) {
+    let _g = gate();
+    let root = fresh_dir(&format!("synth_rate_{rate}"));
+    let session = root.join(".screenrec_tmp").join("sess-rate");
+    fs::create_dir_all(&session).expect("创建会话目录");
+    let a0 = session.join("out0_00000.mkv");
+    let a1 = session.join("out0_00001.mkv");
+    mk_seg_with_rate(&a0, 2.0, 440, rate);
+    mk_seg_with_rate(&a1, 2.0, 660, rate);
+    truncate_to(&a1, 0.6); // 崩溃尾段（未封口形态）
+    save_manifest_atomic(
+        &session,
+        &manifest_with(
+            "sess-rate",
+            vec![route_with(
+                "route-rate",
+                "Recovery Rate",
+                &["v", "a"],
+                vec![seg_entry(&a0, 2.0, true), seg_entry(&a1, 2.0, false)],
+            )],
+        ),
+    )
+    .expect("写会话清单");
+
+    let sessions = scan_sessions(&root);
+    let s = find_session(&sessions, &session);
+    assert!(!s.active, "合成残留会话应为非活跃");
+    assert!(
+        s.sealed_segments.contains(&a0),
+        "首个封口段应可收尾（得到 {:?}）",
+        s.sealed_segments
+    );
+
+    // M15b 核对原段/保留现场：显式 keep=true（M14c 默认清理单独覆盖）。
+    let fin = finalize_session_with_options(&s.dir, true).expect("恢复收尾应成功");
+    assert_eq!(fin.route_finals.len(), 1, "单路会话应恰 1 个成品");
+    let final_path = &fin.route_finals[0].1;
+    assert!(
+        final_path.exists(),
+        "成品应存在（{}）",
+        final_path.display()
+    );
+    assert!(decode_exit0(final_path), "恢复成品应可解码");
+    assert_eq!(
+        probe_audio_shape(final_path),
+        format!("aac,{rate},2"),
+        "REQ-5：恢复成品音轨应保留 {rate} 输出率"
+    );
+    let dur = probe_duration(final_path);
+    assert!(
+        (dur - 2.0).abs() <= SEG_DUR_TOL,
+        "成品时长应≈封口段和（2.0s；得到 {dur:.3}s）"
+    );
+    for p in &s.sealed_segments {
+        assert!(p.exists(), "keep=true 收尾应保留原段（{}）", p.display());
+    }
+    println!(
+        "[recovery-rate-{rate}] 成品 {} 时长 {dur:.3}s；音轨 aac,{rate},2；原段保留 {} 个",
+        final_path.display(),
+        s.sealed_segments.len()
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// M15b/REQ-5：44.1k 输出率的恢复子集（isolation 由 audio_isolation 套件覆盖）。
+#[test]
+#[ignore = "L2/M15b：合成崩溃残留 + 44.1k 输出率恢复子集（锁定 ffmpeg）"]
+fn it_recovery_sample_rate_44100() {
+    recovery_sample_rate_case(44_100);
+}
+
+/// M15b/REQ-5：96k 输出率的恢复子集。
+#[test]
+#[ignore = "L2/M15b：合成崩溃残留 + 96k 输出率恢复子集（锁定 ffmpeg）"]
+fn it_recovery_sample_rate_96000() {
+    recovery_sample_rate_case(96_000);
+}
+
+/// M15c/acc-7：清单已记 `final_path` 但成品零字节（损坏）→ 收尾必须报错、
+/// 保留会话目录与原段、不得按默认策略清理；错误信息须指出成品校验失败。
+#[test]
+#[ignore = "L2/M15c：合成清单 + 零字节成品回归（锁定 ffmpeg 造段；无需编码器）"]
+fn it_recovery_corrupt_recorded_final_keeps_session() {
+    let _g = gate();
+    let root = fresh_dir("corrupt-final");
+    let session = root.join(".screenrec_tmp").join("sess-corrupt-final");
+    fs::create_dir_all(&session).expect("创建会话目录");
+    let seg = session.join("out0_00000.mkv");
+    mk_seg(&seg, 2.0, 440);
+    let final_path = root.join("20261018_120000_Corrupt Final.mkv");
+    fs::write(&final_path, b"").expect("写零字节成品");
+
+    let mut route = route_with(
+        "route-corrupt",
+        "Corrupt Final",
+        &["v", "a"],
+        vec![seg_entry(&seg, 2.0, true)],
+    );
+    route.state = "final".to_string();
+    route.final_path = Some(final_path.clone());
+    save_manifest_atomic(&session, &manifest_with("sess-corrupt-final", vec![route]))
+        .expect("写会话清单");
+
+    let err = finalize_session(&session)
+        .expect_err("清单已记成品但零字节：收尾不得判成功（否则默认清理会删掉原段）");
+    let detail = match &err {
+        RecoveryError::RecoveryFailed { detail } => detail.clone(),
+        other => panic!("应报 RecoveryFailed（得到 {other:?}）"),
+    };
+    assert!(
+        detail.contains("成品校验失败"),
+        "错误应可见地指出成品校验失败（得到 {detail}）"
+    );
+    assert!(
+        detail.contains(&final_path.display().to_string()),
+        "错误应包含损坏成品路径（得到 {detail}）"
+    );
+    assert!(
+        session.exists() && session.join("manifest.json").exists(),
+        "校验失败必须保留会话目录/清单（{}）",
+        session.display()
+    );
+    assert!(seg.exists(), "校验失败必须保留原段（{}）", seg.display());
+    assert_eq!(
+        fs::metadata(&final_path).expect("成品元数据").len(),
+        0,
+        "损坏成品不得被静默改写/删除"
+    );
+    println!("[recovery] M15c 零字节成品回归 OK：{detail}");
+    let _ = fs::remove_dir_all(&root);
 }

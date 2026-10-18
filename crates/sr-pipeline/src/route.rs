@@ -369,12 +369,13 @@ pub fn start_route_with_options(
         cfg.output_dir,
         None,
         keep_segments,
+        sr_audio::wasapi::PIPELINE_SAMPLE_RATE,
     )
 }
 
 /// 启动带音轨的路由（M4）。Ok = 输出开始（§3.1，同 [`start_route`]）；
 /// 句柄/收尾语义复用 [`RouteHandle`]（request_stop/wait_finalized/segments）。
-/// 隔离模式：每 `App` 源一条独立音轨（aac/48k/立体声）；音源 PID 消失 → 该轨
+/// 隔离模式：每 `App` 源一条独立音轨（aac/输出率/立体声；输出率=设置，默认 48k）；音源 PID 消失 → 该轨
 /// 静音继续（墙钟静音续流）、路由不失败（REQ-14/S3 §3.3）。
 pub fn start_audio_route(cfg: AudioRouteConfig) -> Result<RouteHandle, RouteError> {
     start_route_impl(
@@ -384,6 +385,7 @@ pub fn start_audio_route(cfg: AudioRouteConfig) -> Result<RouteHandle, RouteErro
         cfg.output_dir,
         None,
         false,
+        sr_audio::wasapi::PIPELINE_SAMPLE_RATE,
     )
 }
 
@@ -423,6 +425,25 @@ pub fn start_routes_with_options(
     encoder: Option<String>,
     keep_segments: bool,
 ) -> Result<Vec<RouteHandle>, RouteError> {
+    start_routes_with_options_and_rate(
+        cfgs,
+        encoder,
+        keep_segments,
+        sr_audio::wasapi::PIPELINE_SAMPLE_RATE,
+    )
+}
+
+/// M15/REQ-3：批量启动 + 输出率（捕获率 → 输出率重采样；sidecar `-ar` 参数化）。
+///
+/// `out_rate` = 设置 `audio_sample_rate`（44.1k/48k/88.2k/96k）。48k 基线行为与
+/// [`start_routes_with_options`] 完全一致（捕获率==输出率时重采样器保持恒等直通）。
+pub fn start_routes_with_options_and_rate(
+    cfgs: Vec<MultiRouteConfig>,
+    encoder: Option<String>,
+    keep_segments: bool,
+    out_rate: u32,
+) -> Result<Vec<RouteHandle>, RouteError> {
+    assert!(out_rate > 0, "输出采样率必须为正");
     let mut handles: Vec<RouteHandle> = Vec::new();
     for cfg in cfgs {
         match start_route_impl(
@@ -432,6 +453,7 @@ pub fn start_routes_with_options(
             cfg.output_dir,
             encoder.as_deref(),
             keep_segments,
+            out_rate,
         ) {
             Ok(h) => handles.push(h),
             Err(e) => {
@@ -489,9 +511,9 @@ pub struct AudioOnlyConfig {
     pub output_dir: PathBuf,
 }
 
-/// 纯录音成品：与 sources **同序同长**；每来源一条独立 WAV（48kHz s16 立体声）
-/// 位于 output_dir 内（文件名为实现自由）。默认成功后其源会话目录随策略清理
-/// （`keep_segments=true` 时保留）。
+/// 纯录音成品：与 sources **同序同长**；每来源一条独立 WAV（输出率 s16 立体声，
+/// 默认 48k；M15/REQ-3）位于 output_dir 内（文件名为实现自由）。默认成功后其源
+/// 会话目录随策略清理（`keep_segments=true` 时保留）。
 #[derive(Clone, Debug)]
 pub struct AudioOnlyFinalized {
     pub wav_paths: Vec<PathBuf>,
@@ -554,9 +576,10 @@ impl Drop for AudioOnlyHandle {
     }
 }
 
-/// 启动纯录音（REQ-19）：1..N 来源 → 各来源独立 WAV（48kHz s16 立体声；每来源一个
-/// 采集客户端 + 一个 WAV 写线程）。**停止即成品**：request_stop 后写线程停采集并
-/// 封口 WAV，wait_finalized 直接返回产物路径（无 concat/后台收尾）。
+/// 启动纯录音（REQ-19）：1..N 来源 → 各来源独立 WAV（输出率 s16 立体声，默认 48k；
+/// M15/REQ-3 写线程重采样；每来源一个采集客户端 + 一个 WAV 写线程）。**停止即成品**：
+/// request_stop 后写线程停采集并封口 WAV，wait_finalized 直接返回产物路径（无
+/// concat/后台收尾）。
 /// 错误映射：环回不可用 → `LoopbackUnavailable`（L2 → BLOCKED）；其余启动失败 →
 /// `StartFailed`/`TargetInvalid`/`CaptureFailed`。
 ///
@@ -577,6 +600,22 @@ pub fn start_audio_only_with_options(
     cfg: AudioOnlyConfig,
     keep_segments: bool,
 ) -> Result<AudioOnlyHandle, RouteError> {
+    start_audio_only_with_options_and_rate(
+        cfg,
+        keep_segments,
+        sr_audio::wasapi::PIPELINE_SAMPLE_RATE,
+    )
+}
+
+/// M15/REQ-3：纯录音 + 输出率——WAV 写线程把实际捕获样本重采样到 `out_rate` 后
+/// 写入（WAV 头采样率 = `out_rate`）；`out_rate == 捕获率` 且 0ppm 时重采样器
+/// 保持恒等直通（48k 基线行为不变）。
+pub fn start_audio_only_with_options_and_rate(
+    cfg: AudioOnlyConfig,
+    keep_segments: bool,
+    out_rate: u32,
+) -> Result<AudioOnlyHandle, RouteError> {
+    assert!(out_rate > 0, "输出采样率必须为正");
     // App 源身份前置校验（REQ-14/D9：激活前、快速失败；与 start_audio_route 同语义）。
     for src in &cfg.sources {
         if let AudioSourceSpec::App {
@@ -636,13 +675,17 @@ pub fn start_audio_only_with_options(
     }
 
     // 逐源启动采集（同步握手 = 激活成功才 Ok；失败即停已启动流并返回）。
+    // M15/REQ-8：Ready 携带实际捕获格式，写线程据此构造重采样器。
     let stop = Arc::new(AtomicBool::new(false));
-    let mut streams: Vec<LoopbackStream> = Vec::new();
+    let mut streams: Vec<(LoopbackStream, sr_audio::wasapi::CaptureFormat)> = Vec::new();
     for src in &cfg.sources {
         match start_audio_stream(src) {
-            Ok(s) => streams.push(s),
+            Ok(s) => {
+                let fmt = s.capture_format();
+                streams.push((s, fmt));
+            }
             Err(e) => {
-                for s in streams {
+                for (s, _) in streams {
                     s.stop();
                 }
                 let _ = std::fs::remove_dir_all(&session_dir);
@@ -652,18 +695,16 @@ pub fn start_audio_only_with_options(
     }
 
     // 每源一条独立 WAV（REQ-19：同序同长；纯分配禁覆盖）+ 一个写线程。
+    // M15/REQ-3：WAV 头部采样率 = 输出率（写线程内部把捕获样本重采样到该率）。
     let ts = format_timestamp(current_unix_ms(), local_utc_offset_minutes());
     let mut plans: Vec<(PathBuf, WavWriter)> = Vec::new();
-    for i in 0..cfg.sources.len() {
+    for i in 0..streams.len() {
+        let fmt = streams[i].1;
         let path = next_available(&session_dir, &format!("{ts}_audio{i}"), "wav");
-        match WavWriter::create(
-            &path,
-            sr_audio::wasapi::PIPELINE_SAMPLE_RATE,
-            sr_audio::wasapi::PIPELINE_CHANNELS,
-        ) {
+        match WavWriter::create(&path, out_rate, fmt.channels) {
             Ok(w) => plans.push((path, w)),
             Err(e) => {
-                for s in streams {
+                for (s, _) in streams {
                     s.stop();
                 }
                 let _ = std::fs::remove_dir_all(&session_dir);
@@ -675,18 +716,19 @@ pub fn start_audio_only_with_options(
     }
 
     // 写线程：写线程独占流（任一退出路径先停采集；停止 → 封口 → 记录路径）。
-    let mut streams_opt: Vec<Option<LoopbackStream>> = streams.into_iter().map(Some).collect();
+    let mut streams_opt: Vec<Option<(LoopbackStream, sr_audio::wasapi::CaptureFormat)>> =
+        streams.into_iter().map(Some).collect();
     let mut wav_paths: Vec<PathBuf> = Vec::new();
     let mut writers: Vec<std::thread::JoinHandle<Result<(), String>>> = Vec::new();
     for (i, (path, writer)) in plans.into_iter().enumerate() {
-        let stream = streams_opt
+        let (stream, capture_format) = streams_opt
             .get_mut(i)
             .and_then(|s| s.take())
             .expect("采集流与写计划同长");
         let stop_flag = stop.clone();
         let spawn = std::thread::Builder::new()
             .name(format!("sr-audio-only-{i}"))
-            .spawn(move || audio_only_writer(stream, writer, stop_flag));
+            .spawn(move || audio_only_writer(stream, capture_format, writer, stop_flag, out_rate));
         match spawn {
             Ok(h) => {
                 wav_paths.push(path);
@@ -696,7 +738,7 @@ pub fn start_audio_only_with_options(
                 // 写线程启动失败：停掉所有剩余采集流，等待已启动写线程收口。
                 stop.store(true, Ordering::Release);
                 for slot in streams_opt.iter_mut() {
-                    if let Some(s) = slot.take() {
+                    if let Some((s, _)) = slot.take() {
                         s.stop();
                     }
                 }
@@ -798,18 +840,50 @@ fn commit_audio_only(
     Ok(committed)
 }
 
-/// 单来源 WAV 写线程：收包 → 补零/写样本；停止请求 → 停采集 → 封口（停止即成品）。
+/// 单来源 WAV 写线程：收包 → 重采样（捕获率 → 输出率）→ 补零/写样本；停止请求 →
+/// 停采集 → 冲刷重采样尾部 → 封口（停止即成品）。
 fn audio_only_writer(
     stream: LoopbackStream,
+    capture_format: sr_audio::wasapi::CaptureFormat,
     mut writer: WavWriter,
     stop: Arc<AtomicBool>,
+    out_rate: u32,
 ) -> Result<(), String> {
+    let channels = capture_format.channels as usize;
+    let mut resampler = DriftResampler::new(channels, capture_format.sample_rate, out_rate);
+    let write_block = |writer: &mut WavWriter,
+                       resampler: &mut DriftResampler,
+                       pad_frames: u64,
+                       samples: &[f32]|
+     -> Result<(), String> {
+        let pad = pad_frames as usize;
+        let frames = samples.len() / channels;
+        if pad > 0 || frames > 0 {
+            // 补齐帧一并进入重采样（时间轴缩放必须覆盖整段输出）。
+            let mut block = Vec::with_capacity((pad + frames) * channels);
+            block.resize(pad * channels, 0.0);
+            block.extend_from_slice(samples);
+            let out = resampler.process(&block);
+            if !out.is_empty() {
+                writer
+                    .write_f32_interleaved(&out)
+                    .map_err(|e| format!("WAV 写入失败: {e:?}"))?;
+            }
+        }
+        Ok(())
+    };
     let mut stream = Some(stream);
     let outcome = (|| -> Result<(), String> {
         loop {
             if stop.load(Ordering::Acquire) {
                 if let Some(s) = stream.take() {
                     s.stop();
+                }
+                let tail = resampler.flush();
+                if !tail.is_empty() {
+                    writer
+                        .write_f32_interleaved(&tail)
+                        .map_err(|e| format!("WAV 写入失败: {e:?}"))?;
                 }
                 writer
                     .finalize()
@@ -822,21 +896,23 @@ fn audio_only_writer(
                 .recv_timeout(Duration::from_millis(200))
             {
                 Some(StreamEvent::Pcm { plan, samples }) => {
-                    if plan.pad_frames > 0 {
-                        writer
-                            .write_silence_frames(plan.pad_frames)
-                            .map_err(|e| format!("WAV 写入失败: {e:?}"))?;
-                    }
-                    if !samples.is_empty() {
-                        writer
-                            .write_f32_interleaved(&samples)
-                            .map_err(|e| format!("WAV 写入失败: {e:?}"))?;
-                    }
+                    write_block(
+                        &mut writer,
+                        &mut resampler,
+                        plan.pad_frames,
+                        samples.as_slice(),
+                    )?;
                 }
                 Some(StreamEvent::Error(e)) => {
                     // 采集流运行期终止：封口已写内容并如实报错。
                     if let Some(s) = stream.take() {
                         s.stop();
+                    }
+                    let tail = resampler.flush();
+                    if !tail.is_empty() {
+                        writer
+                            .write_f32_interleaved(&tail)
+                            .map_err(|e| format!("WAV 写入失败: {e:?}"))?;
                     }
                     writer
                         .finalize()
@@ -1038,6 +1114,7 @@ fn start_route_impl(
     output_dir: PathBuf,
     encoder_override: Option<&str>,
     keep_segments: bool,
+    out_rate: u32,
 ) -> Result<RouteHandle, RouteError> {
     let seq = ROUTE_SEQ.fetch_add(1, Ordering::Relaxed);
     let millis = SystemTime::now()
@@ -1186,6 +1263,7 @@ fn start_route_impl(
         .iter()
         .map(|p| AudioPipeSpec {
             pipe_path: p.name().to_string(),
+            sample_rate: out_rate,
         })
         .collect();
     let args = build_encode_args(
@@ -1308,7 +1386,7 @@ fn start_route_impl(
 
     // ── 音频轨：流式采集（App=进程环回 / System=设备环回 REQ-15 / Mic=麦克风 REQ-16，
     //     同一采集核）→ 漂移纠正（REQ-26/D7：Timeline + DriftController + 变比重采样）
-    //     → 管道写线程（f32le/48k/2ch；音源消失 → 墙钟静音续流，REQ-14/S3 §3.3）。
+    //     → 管道写线程（f32le/输出率/2ch；音源消失 → 墙钟静音续流，REQ-14/S3 §3.3）。
     //     激活失败在此显式化（E_LOOPBACK_UNAVAILABLE 等）。 ──
     let mut audio_tracks: Vec<AudioTrack> = Vec::new();
     let video_frames = sender.frame_counter();
@@ -1331,6 +1409,7 @@ fn start_route_impl(
                 return Err(capture_start_error(e));
             }
         };
+        let capture_format = stream.capture_format();
         let stop_writer = Arc::new(AtomicBool::new(false));
         let writer_stop = stop_writer.clone();
         let shared_for_writer = shared.clone();
@@ -1349,13 +1428,16 @@ fn start_route_impl(
                     };
                     // REQ-26：每轨独立漂移决策 + 变比重采样；参照 = 视频 CFR 槽计数，
                     // Timeline 提供 T0/墙钟兜底（视频尚未出帧时）。
+                    // M15/REQ-6/8：基础比率 = 输出率/实际捕获率；输入计数在捕获率域，
+                    // 漂移比较统一换算到秒。
+                    let capture_rate = capture_format.sample_rate;
+                    let channels = capture_format.channels as usize;
                     let mut drift = DriftController::new(DriftCfg {
                         enter_ms: DRIFT_ENTER_MS,
                         exit_ms: DRIFT_EXIT_MS,
                         rate_limit_ppm: DRIFT_LIMIT_PPM,
                     });
-                    let mut resampler =
-                        DriftResampler::new(sr_audio::wasapi::PIPELINE_CHANNELS as usize);
+                    let mut resampler = DriftResampler::new(channels, capture_rate, out_rate);
                     let mut device_frames: u64 = 0;
                     let mut base_video: Option<u64> = None;
                     let mut base_rel_hns: i64 = 0;
@@ -1367,9 +1449,12 @@ fn start_route_impl(
                             stop_stream(&mut stream);
                             // REQ-26 停止冲刷：音频管道关闭/EOF 之前补写重采样器
                             // 尚未吐出的尾部（直通 1 帧 / rubato 滤波延迟量级）。
-                            diag.flush_frames +=
-                                flush_audio_tail(&writer_pipe, &shared_for_writer, &mut resampler)
-                                    as u64;
+                            diag.flush_frames += flush_audio_tail(
+                                &writer_pipe,
+                                &shared_for_writer,
+                                &mut resampler,
+                                channels,
+                            ) as u64;
                             if diag_on {
                                 diag.report(k, "stop");
                             }
@@ -1388,13 +1473,14 @@ fn start_route_impl(
                                         .unwrap_or(0);
                                 }
                                 let pad_frames = plan.pad_frames as usize;
-                                let payload_frames = samples.len() / 2;
+                                let payload_frames = samples.len() / channels;
                                 diag.on_pcm(pad_frames as u64, payload_frames as u64);
                                 if pad_frames > 0 || payload_frames > 0 {
                                     // 补齐帧一并进入重采样（时间轴缩放必须覆盖整段输出）。
-                                    let mut block =
-                                        Vec::with_capacity((pad_frames + payload_frames) * 2);
-                                    block.resize(pad_frames * 2, 0.0);
+                                    let mut block = Vec::with_capacity(
+                                        (pad_frames + payload_frames) * channels,
+                                    );
+                                    block.resize(pad_frames * channels, 0.0);
                                     block.extend_from_slice(&samples);
                                     let out = resampler.process(&block);
                                     device_frames += (pad_frames + payload_frames) as u64;
@@ -1413,14 +1499,13 @@ fn start_route_impl(
                                         }
                                     }
                                 }
-                                // 漂移测量（节流 200ms）：内容偏差 = 参照帧 − 已编排帧。
+                                // 漂移测量（节流 200ms）：内容偏差 = 参照秒 − 已编排秒。
                                 if next_measure.elapsed() >= DRIFT_MEASURE_INTERVAL {
                                     let vf = writer_frames
                                         .load(Ordering::Acquire)
                                         .saturating_sub(base_video.unwrap_or(0));
-                                    let reference = if vf >= 2 {
+                                    let reference_secs = if vf >= 2 {
                                         vf as f64 / video_fps as f64
-                                            * sr_audio::wasapi::PIPELINE_SAMPLE_RATE as f64
                                     } else {
                                         drift_timeline
                                             .map(|t| {
@@ -1428,11 +1513,14 @@ fn start_route_impl(
                                                     - base_rel_hns)
                                                     as f64
                                                     / crate::epoch::HNS_PER_SEC as f64
-                                                    * sr_audio::wasapi::PIPELINE_SAMPLE_RATE as f64
                                             })
-                                            .unwrap_or(device_frames as f64)
+                                            .unwrap_or(device_frames as f64 / capture_rate as f64)
                                     };
-                                    let offset_ms = (reference - device_frames as f64) / 48.0;
+                                    let offset_ms = content_offset_ms(
+                                        reference_secs,
+                                        device_frames,
+                                        capture_rate,
+                                    );
                                     let action = drift.on_measurement(offset_ms);
                                     let ppm = match action {
                                         DriftAction::Correct { rate_ppm } => rate_ppm,
@@ -1456,6 +1544,7 @@ fn start_route_impl(
                                     &writer_pipe,
                                     &shared_for_writer,
                                     &mut resampler,
+                                    channels,
                                 ) as u64;
                                 if diag_on {
                                     diag.report(k, "capture-error");
@@ -1510,10 +1599,23 @@ fn bytes_of_f32(samples: &[f32]) -> Vec<u8> {
     samples.iter().flat_map(|s| s.to_le_bytes()).collect()
 }
 
+/// 漂移内容偏差（毫秒；正 = 音频落后基准）：统一换算到**秒域**比较
+/// （`reference_secs − captured_frames / capture_rate`）。REQ-8：不得再把原始
+/// 捕获帧固定解释为 48k（混合率会制造虚假校正）。
+fn content_offset_ms(reference_secs: f64, captured_frames: u64, capture_rate: u32) -> f64 {
+    assert!(capture_rate > 0, "capture_rate 必须为正");
+    (reference_secs - captured_frames as f64 / capture_rate as f64) * 1000.0
+}
+
 /// REQ-26 停止冲刷：把重采样器尾部写入音频管道（EOF 之前；失败仅记诊断，
 /// 不改变停止/收尾归因）。重复调用由 `DriftResampler::flush` 幂等保证。
-/// 返回冲刷的帧数（诊断：EOF 前的尾量）。
-fn flush_audio_tail(pipe: &VideoPipe, shared: &Shared, resampler: &mut DriftResampler) -> usize {
+/// 返回冲刷的帧数（诊断：EOF 前的尾量；`channels` = 实际捕获声道数）。
+fn flush_audio_tail(
+    pipe: &VideoPipe,
+    shared: &Shared,
+    resampler: &mut DriftResampler,
+    channels: usize,
+) -> usize {
     let tail = resampler.flush();
     if tail.is_empty() {
         return 0;
@@ -1521,7 +1623,7 @@ fn flush_audio_tail(pipe: &VideoPipe, shared: &Shared, resampler: &mut DriftResa
     if let Err(e) = pipe.write_all(&bytes_of_f32(&tail)) {
         record_send_error(shared, &e);
     }
-    tail.len() / sr_audio::wasapi::PIPELINE_CHANNELS as usize
+    tail.len() / channels
 }
 
 /// 记录音频管道写错误（诊断；对端死亡归因仍以 child 退出码为准）。
@@ -2037,5 +2139,34 @@ mod tests {
             session.display()
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// REQ-8：捕获 96k / 输出 48k 稳态输入 → 漂移比较统一到秒域，corrections ≈ 0
+    /// （不因「帧数 ÷ 48k」与 96k 帧数混用而产生虚假校正）。
+    #[test]
+    fn unit_drift_mixed_rates_no_false_correction() {
+        let capture_rate = 96_000u32;
+        let mut drift = DriftController::new(DriftCfg {
+            enter_ms: DRIFT_ENTER_MS,
+            exit_ms: DRIFT_EXIT_MS,
+            rate_limit_ppm: DRIFT_LIMIT_PPM,
+        });
+        let mut corrections = 0;
+        let mut max_abs = 0.0f64;
+        for step in 1..=100u64 {
+            // 视频 30fps 参照：每 0.2s 采样一次；捕获帧数按 96k 域累计。
+            let reference_secs = step as f64 * 0.2;
+            let capture_frames = (reference_secs * capture_rate as f64).round() as u64;
+            let offset_ms = content_offset_ms(reference_secs, capture_frames, capture_rate);
+            max_abs = max_abs.max(offset_ms.abs());
+            if !matches!(drift.on_measurement(offset_ms), DriftAction::Hold) {
+                corrections += 1;
+            }
+        }
+        assert!(
+            max_abs < 0.01,
+            "96k 捕获/48k 输出的稳态偏差应为 0（得到 {max_abs}ms）"
+        );
+        assert_eq!(corrections, 0, "REQ-8：不得产生虚假漂移校正");
     }
 }

@@ -59,10 +59,11 @@ use rustfft::{num_complex::Complex, FftPlanner};
 use common::*;
 use sr_audio::wasapi::{capture_process_loopback, AudioSourceSpec, CaptureError, CapturedPcm};
 use sr_pipeline::route::{
-    start_audio_route, AudioRouteConfig, RouteError, RouteHandle, RouteTarget, VideoCfg,
+    start_audio_route, start_routes_with_options_and_rate, AudioRouteConfig, MultiRouteConfig,
+    RouteError, RouteHandle, RouteTarget, VideoCfg,
 };
 
-/// L2 音频用例串行门：同一测试二进制内 4 个用例各自起 ffplay/路由，串行执行
+/// L2 音频用例串行门：同一测试二进制内 6 个用例各自起 ffplay/路由，串行执行
 /// （避免并发音源互相抬升引擎负载；隔离语义本身不受影响——进程环回按目标过滤）。
 static GATE: Mutex<()> = Mutex::new(());
 
@@ -439,6 +440,23 @@ fn start_audio_route_ok(cfg: AudioRouteConfig) -> RouteHandle {
     }
 }
 
+/// M15b/REQ-5：指定输出率的音频路由（批量启动 API 的单路形态；错误映射同上）。
+fn start_audio_route_at_rate_ok(cfg: MultiRouteConfig, out_rate: u32) -> RouteHandle {
+    match start_routes_with_options_and_rate(vec![cfg], None, false, out_rate) {
+        Ok(mut handles) => handles.remove(0),
+        Err(e) if matches!(e, RouteError::EncoderUnavailable { .. }) => blocked(&format!(
+            "无可用编码器（§9 T1：明确报错并列出可用编码器）：{e:?}"
+        )),
+        Err(e) if matches!(e, RouteError::ConsentDenied { .. }) => {
+            blocked(&format!("WGC 授权被拒（E_CONSENT_DENIED）：{e:?}"))
+        }
+        Err(e) if matches!(e, RouteError::LoopbackUnavailable { .. }) => blocked(&format!(
+            "进程环回不可用（E_LOOPBACK_UNAVAILABLE，§3.5 环境缺失）：{e:?}"
+        )),
+        Err(e) => panic!("start_routes_with_options_and_rate 应成功（得到 {e:?}）"),
+    }
+}
+
 // ─────────────────────────── ffprobe / 音轨解码 ───────────────────────────
 
 fn ffprobe_csv(path: &Path, args: &[&str]) -> String {
@@ -771,16 +789,15 @@ fn it_audio_identity_bounded_no_host_leak() {
 }
 
 /// REQ-17（隔离模式的音轨输出部分，M4；全音轨模式属 M6）：窗口路由 + 目标应用音轨
-/// → 成品 MKV 恰 1 视频 + 1 音轨（隔离默认；无麦克风 ⇒ 无 mic 轨）、aac/48k/立体声
-/// （§3.3 基准），音轨内容级隔离（440 在、880 ≤ −40dB）。时长≈录制段。
-#[test]
-#[ignore = "L2：需交互式会话/WGC/可用编码器/默认渲染端点（specs §4）。显式运行：cargo test -p sr-itests --test audio_isolation -- --ignored --nocapture"]
-fn it_audio_multitrack_ffprobe_fft() {
+/// → 成品 MKV 恰 1 视频 + 1 音轨（隔离默认；无麦克风 ⇒ 无 mic 轨）、aac/输出率/立体声
+/// （§3.3 基准；M15b/REQ-5 起 48k 基线 + 44.1k/96k 变体），音轨内容级隔离
+/// （440 在、880 ≤ −40dB）。时长≈录制段。
+fn multitrack_isolation_case(output_rate: u32) {
     let _g = gate();
     require_interactive_session();
     let _os = record_os_build();
 
-    let tmp = fresh_dir("route");
+    let tmp = fresh_dir(&format!("route_{output_rate}"));
     let out_dir = tmp.join("out");
     std::fs::create_dir_all(&out_dir).expect("创建输出目录失败");
     let wav_a = gen_tone_wav(&tmp, "a440.wav", 440);
@@ -796,22 +813,25 @@ fn it_audio_multitrack_ffprobe_fft() {
     let probe = ProbeWindow::new(&format!("SR-M4-RED-audio-{}", std::process::id()));
     std::thread::sleep(Duration::from_millis(300));
 
-    let h = start_audio_route_ok(AudioRouteConfig {
-        target: RouteTarget::Window {
-            hwnd: probe.hwnd_u64,
+    let h = start_audio_route_at_rate_ok(
+        MultiRouteConfig {
+            target: RouteTarget::Window {
+                hwnd: probe.hwnd_u64,
+            },
+            video: VideoCfg {
+                canvas_w: 640,
+                canvas_h: 360,
+                fps: 30,
+                cursor: true,
+            },
+            audio: vec![AudioSourceSpec::App {
+                pid: pid_a,
+                created_at_unix_ms: created_a,
+            }],
+            output_dir: out_dir.clone(),
         },
-        video: VideoCfg {
-            canvas_w: 640,
-            canvas_h: 360,
-            fps: 30,
-            cursor: true,
-        },
-        audio: vec![AudioSourceSpec::App {
-            pid: pid_a,
-            created_at_unix_ms: created_a,
-        }],
-        output_dir: out_dir.clone(),
-    });
+        output_rate,
+    );
     std::thread::sleep(Duration::from_millis(300));
     let t_rec = Instant::now();
     std::thread::sleep(Duration::from_secs(8));
@@ -850,11 +870,16 @@ fn it_audio_multitrack_ffprobe_fft() {
     );
     let (acodec, ar, ch) = probe_audio_stream(&fin.final_path);
     assert_eq!(acodec, "aac", "§3.3 基准：音频编码 aac");
-    assert_eq!(ar, 48000, "REQ-18：音轨 48kHz");
+    assert_eq!(
+        ar, output_rate,
+        "REQ-5：音轨实际采样率应为所选输出率（得到 {ar}）"
+    );
     assert_eq!(ch, 2, "REQ-18：音轨立体声");
 
     let dur = probe_duration(&fin.final_path);
-    println!("[route] 时长 {dur:.3}s（录制段 {span:.3}s）");
+    println!(
+        "[route-rate-{output_rate}] 时长 {dur:.3}s（录制段 {span:.3}s）；音轨 aac,{output_rate},2"
+    );
     assert!(
         (dur - span).abs() <= 2.0,
         "REQ-17：成品时长应≈录制段（{dur:.3}s vs {span:.3}s）"
@@ -870,6 +895,27 @@ fn it_audio_multitrack_ffprobe_fft() {
     assert_tone_isolated(&mono, 48_000, 440.0, 880.0, "app 轨");
 
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// 48k 基线（REQ-17/18 既有断言不变）。
+#[test]
+#[ignore = "L2：需交互式会话/WGC/可用编码器/默认渲染端点（specs §4）。显式运行：cargo test -p sr-itests --test audio_isolation -- --ignored --nocapture"]
+fn it_audio_multitrack_ffprobe_fft() {
+    multitrack_isolation_case(48_000);
+}
+
+/// M15b/REQ-5：44.1k 输出率的隔离子集（隔离判定与 48k 基线一致）。
+#[test]
+#[ignore = "L2/M15b：44.1k 输出率隔离子集（交互式会话/WGC/编码器/默认渲染端点）"]
+fn it_audio_multitrack_ffprobe_fft_44100() {
+    multitrack_isolation_case(44_100);
+}
+
+/// M15b/REQ-5：96k 输出率的隔离子集。
+#[test]
+#[ignore = "L2/M15b：96k 输出率隔离子集（交互式会话/WGC/编码器/默认渲染端点）"]
+fn it_audio_multitrack_ffprobe_fft_96000() {
+    multitrack_isolation_case(96_000);
 }
 
 /// REQ-26：背压/停滞恢复后的阶跃校正——录制中挂起 sidecar 全部线程 2s

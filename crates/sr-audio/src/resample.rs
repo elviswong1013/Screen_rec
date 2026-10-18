@@ -106,26 +106,29 @@ const MAX_PPM: f64 = 1000.0;
 /// 输出索引 0 已含首帧内容，内容延迟比其少 1 帧（见 `impulse_delay_*` 单测）。
 const DELAY_SUPPORT_BIAS: f64 = 1.0;
 
-/// 变比重采样器（REQ-26/D2：录制管线把 `DriftController` 的 ppm 速率应用到样本流）。
+/// 变比重采样器（REQ-26/D2：录制管线把 `DriftController` 的 ppm 速率应用到样本流；
+/// M15/REQ-6：基础比率 = 输出率/捕获率）。
 ///
 /// 实现：rubato 5.x **Async + Sinc 插值**（BlackmanHarris2 窗，Cubic 插值），
-/// `FixedAsync::Input` 固定输入、输出帧数随比率变化。接口保持不变，调用点仍为
-/// 「`set_rate_ppm` + `process`」（route.rs 无需改动）。
+/// `FixedAsync::Input` 固定输入、输出帧数随比率变化。接口保持「`set_rate_ppm` +
+/// `process`」。
 ///
 /// 语义：
-/// - `ratio` = 每输入帧产生的输出帧数 = 1 / (1 + ppm/1e6)：正 ppm（音频落后 →
-///   加速/丢）输出帧数变少；负 ppm（减速/补）输出帧数变多；
+/// - `base` = `out_rate / in_rate`；有效 `ratio = base / (1 + ppm/1e6)`。正 ppm
+///   （音频落后 → 加速/丢）输出帧数变少；负 ppm（减速/补）变多；
+/// - `base == 1` 且 0ppm：逐样本恒等直通（既有 48k 基线行为不变）；`base != 1`
+///   时 0ppm **不得**直通——构造即进入 rubato，按基础比率转换；
 /// - 分块：`process` 接受任意长度交错 f32，内部按 ≤ [`MAX_CHUNK`] 帧切块并逐块
 ///   `set_chunk_size`，跨块相位由 rubato 状态连续保持（分块/整块输出一致）；
 /// - 延迟补偿：rubato 的 sinc 群延迟约 `sinc_len/2` 输出帧（实测内容延迟为
-///   支撑一半减 1 帧；[`Self::delay_frames`] 显式记账，常量不累积）。0ppm 未校正
-///   时走逐样本直通（1 帧尾部）；首次进入校正时用直通期保留的历史帧预热，并丢弃
-///   预热输出 + 延迟帧，使校正起点与已写流严丝合缝（无重复/无跳帧）。冷启动
-///   （尚未写过样本）直接进入 rubato，前 `delay_frames()` 帧为滤波器启动斜坡
-///   （固定 1.33ms 量级，属 REQ-26 记账项）；
+///   支撑一半减 1 帧；[`Self::delay_frames`] 显式记账，常量不累积）。直通/校正
+///   切换的补偿逻辑与既有契约一致；冷启动前 `delay_frames()` 帧为滤波器启动
+///   斜坡（REQ-26 记账项）；
 /// - 通道数固定（管线 2），输入/输出均为交错 f32。
 pub struct DriftResampler {
     channels: usize,
+    /// 基础比率（输出率 / 输入率；M15/REQ-6）。
+    base_ratio: f64,
     rate_ppm: f64,
     mode: Mode,
     /// 期望输出帧数（输入时间轴映射 + 冷启动滤波延迟；f64 累积，避免逐块舍入）。
@@ -153,27 +156,55 @@ enum Mode {
 }
 
 impl DriftResampler {
-    pub fn new(channels: usize) -> Self {
+    /// 构造重采样器：`in_rate` = 实际捕获率，`out_rate` = 成品输出率。
+    ///
+    /// `base = out_rate / in_rate`。`base != 1` 时构造函数即进入 rubato（0ppm 也
+    /// 必须转换，不得直通）；`base == 1` 时保持直通，直到首次非零 ppm 才接入。
+    pub fn new(channels: usize, in_rate: u32, out_rate: u32) -> Self {
         assert!(channels > 0, "DriftResampler 通道数必须为正");
+        assert!(in_rate > 0 && out_rate > 0, "采样率必须为正");
+        let base_ratio = out_rate as f64 / in_rate as f64;
+        let (mode, pending_delay) = if (base_ratio - 1.0).abs() < f64::EPSILON {
+            (
+                Mode::Passthrough {
+                    tail: Vec::new(),
+                    history: Vec::new(),
+                },
+                0.0,
+            )
+        } else {
+            (
+                Mode::Active {
+                    resampler: Box::new(build_resampler(base_ratio, channels)),
+                    carry: Vec::new(),
+                    trim_remaining: 0,
+                    trim_base: 0,
+                },
+                content_delay_frames(base_ratio),
+            )
+        };
         Self {
             channels,
+            base_ratio,
             rate_ppm: 0.0,
-            mode: Mode::Passthrough {
-                tail: Vec::new(),
-                history: Vec::new(),
-            },
+            mode,
             expected_out: 0.0,
             emitted_out: 0,
-            pending_delay: 0.0,
+            pending_delay,
             flushed: false,
         }
     }
 
-    /// 设置速率（ppm；内部限幅 ±1000ppm 防误用；0 = 不校正）。
+    /// 当前有效比率（每输入帧产生的输出帧数）。
+    fn effective_ratio(&self, ppm: f64) -> f64 {
+        self.base_ratio / (1.0 + ppm / 1_000_000.0)
+    }
+
+    /// 设置速率（ppm；内部限幅 ±1000ppm 防误用；0 = 不校正，回落基础比率）。
     ///
-    /// 0ppm 且尚未校正过时保持逐样本直通（既有契约：恒等、仅尾部 1 帧延迟）；
-    /// 首次非零速率在此接入 rubato，并完成延迟补偿预热。已接入后 0ppm 仍走
-    /// rubato（ratio=1），避免在直通/重采样两种延迟之间来回切换。
+    /// `base == 1` 且 0ppm 且尚未校正过时保持逐样本直通（既有契约：恒等、仅尾部
+    /// 1 帧延迟）；首次非零速率在此接入 rubato，并完成延迟补偿预热。已接入后
+    /// 0ppm 仍走 rubato（ratio=base），避免在直通/重采样两种延迟之间来回切换。
     pub fn set_rate_ppm(&mut self, ppm: f64) {
         let ppm = ppm.clamp(-MAX_PPM, MAX_PPM);
         if ppm == self.rate_ppm {
@@ -181,7 +212,7 @@ impl DriftResampler {
         }
         self.rate_ppm = ppm;
         let ch = self.channels;
-        let ratio = 1.0 / (1.0 + ppm / 1_000_000.0);
+        let ratio = self.effective_ratio(ppm);
 
         if let Mode::Active { resampler, .. } = &mut self.mode {
             if (resampler.resample_ratio() - ratio).abs() > f64::EPSILON {

@@ -3,11 +3,13 @@
 //! 采集核（[`run_capture_core`]）在**专用 MTA 线程**内完成 COM 初始化、按
 //! [`CaptureTarget`] 激活采集客户端（进程环回 `new_application_loopback_client`
 //! 含 INCLUDE 树语义；设备环回=默认渲染端点 + LOOPBACK 流旗标；麦克风=采集端点）、
-//! 48k/f32/立体声 autoconvert 初始化、事件驱动取包，并经
+//! 分源格式协商（REQ-7：System/Mic 取设备原生采样率，Process 固定 48k；均
+//! f32/立体声 + autoconvert）、事件驱动取包，并经
 //! [`SampleSlotPacer`](crate::slots::SampleSlotPacer) 编排输出（静音补齐/迟到
 //! 裁切/墙钟续流/时长钉齐）。内存 API（[`capture_process_loopback`] /
 //! [`capture_device_loopback`] / [`capture_microphone`]）与流式 API
-//! （[`LoopbackStream`]，供路由管道写）复用同一采集核，行为不分叉。
+//! （[`LoopbackStream`]，供路由管道写）复用同一采集核，行为不分叉；实际捕获
+//! 格式经 `StreamMsg::Ready` 上报（REQ-8）。
 //!
 //! 身份前置校验（REQ-14/D9，激活**之前**执行、快速失败）：
 //! PID 存在性（E_TARGET_LOST）、系统宿主根硬性禁止（HostForbidden）、
@@ -23,10 +25,42 @@ use wasapi::{AudioClient, DeviceEnumerator, Direction, SampleType, StreamMode, W
 
 use crate::slots::{PacketPlan, SampleSlotPacer};
 
-/// 管线固定采样率（REQ-18）。
+/// 管线回退采样率（REQ-18：设备原生率查询失败时回退 48k）。
 pub const PIPELINE_SAMPLE_RATE: u32 = 48_000;
-/// 管线固定声道数（REQ-18：立体声）。
+/// 管线固定声道数（REQ-18：立体声；解码固定双声道四字节，原生声道数会越界）。
 pub const PIPELINE_CHANNELS: u16 = 2;
+
+/// 实际捕获格式（REQ-8：`StreamMsg::Ready` 上报；路由据此构造重采样器）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureFormat {
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+/// 分源捕获格式策略（REQ-7；`queried_mix_rate` 为可注入的 `GetMixFormat` 结果）：
+/// - `Process`：进程环回不可查询，固定 48000/f32/双声道 + autoconvert（忽略注入）；
+/// - `DeviceLoopback`/`Microphone`：查询成功 → 按原生**采样率**请求（仍固定 f32/
+///   双声道）；查询失败（`None`）→ 回退 48000 + autoconvert，不阻断录制。
+pub fn capture_format_strategy(
+    target: &CaptureTarget,
+    queried_mix_rate: Option<u32>,
+) -> CaptureFormat {
+    let sample_rate = match target {
+        CaptureTarget::Process { .. } => PIPELINE_SAMPLE_RATE,
+        CaptureTarget::DeviceLoopback | CaptureTarget::Microphone { .. } => {
+            queried_mix_rate.unwrap_or(PIPELINE_SAMPLE_RATE)
+        }
+    };
+    CaptureFormat {
+        sample_rate,
+        channels: PIPELINE_CHANNELS,
+    }
+}
+
+/// 同步捕获时长钉齐的目标帧数（REQ-8：以**实际捕获率**为域，不得固定 48k）。
+pub fn sync_target_frames(duration: Duration, sample_rate: u32) -> u64 {
+    (duration.as_secs_f64() * sample_rate as f64).round() as u64
+}
 
 /// §3.4 AudioSourceSpec（M4 用例仅构造 App；System/Mic 为契约记载、M6 实现）。
 #[derive(Debug, Clone)]
@@ -109,11 +143,12 @@ pub fn diag_enabled() -> bool {
     matches!(std::env::var("SR_DIAG_AV").as_deref(), Ok("1") | Ok("true"))
 }
 
-/// 进程环回捕获结果（交错立体声 f32；48kHz）。
+/// 进程环回捕获结果（交错立体声 f32；`sample_rate` = 实际捕获率）。
 #[derive(Debug, Clone)]
 pub struct CapturedPcm {
     /// 交错立体声 L,R,L,R,…（帧数 = samples.len()/2）。
     pub samples: Vec<f32>,
+    /// 实际捕获率（REQ-8；设备原生率或回退 48000）。
     pub sample_rate: u32,
     pub channels: u16,
     pub stats: CaptureStats,
@@ -294,7 +329,7 @@ impl CaptureTimeline {
 /// 结束条件：内存 API=录满请求时长并把时长钉到精确帧数；流式=直到 stop。
 #[derive(Clone, Copy)]
 enum EndMode {
-    Duration { wall: Duration, target_frames: u64 },
+    Duration { wall: Duration },
     UntilStopped,
 }
 
@@ -360,39 +395,54 @@ fn stage_error(target: &CaptureTarget, stage: &str, detail: String) -> CaptureEr
 
 /// 采集核：激活 → 事件驱动取包 → 样本槽编排 → sink。
 /// sink 返回 false = 调用方请求提前终止（正常收尾）。任一 I/O 步骤失败即 Err。
+/// `ready` 在 `start_stream` 成功后触发，携带**实际捕获格式**（REQ-8）。
 fn run_capture_core<F>(
     target: &CaptureTarget,
     stop: &AtomicBool,
     mode: EndMode,
-    ready: &mut dyn FnMut(),
+    ready: &mut dyn FnMut(CaptureFormat),
     sink: &mut F,
-) -> Result<CaptureStats, CaptureError>
+) -> Result<(CaptureStats, CaptureFormat), CaptureError>
 where
     F: FnMut(PacketPlan, &[f32]) -> bool,
 {
     // 专用线程内 COM MTA 初始化（S3 §4：UI 线程/STA 禁用——RPC_E_CHANGED_MODE）。
     let _ = wasapi::initialize_mta();
 
-    let (wall, target_frames) = match mode {
-        EndMode::Duration {
-            wall,
-            target_frames,
-        } => (Some(wall), Some(target_frames)),
-        EndMode::UntilStopped => (None, None),
+    let wall = match mode {
+        EndMode::Duration { wall } => Some(wall),
+        EndMode::UntilStopped => None,
     };
     let started = Instant::now();
 
     // 采集客户端激活（进程环回/设备环回/麦克风；失败 → 对应目标错误变体）。
     let mut client = create_capture_client(target)?;
 
-    // 进程环回无物理端点（GetMixFormat 不可用）：调用方选定 48k/f32/立体声，
-    // 引擎 autoconvert 转换（REQ-18；S3 §4；设备环回/麦克风同格式实测可初始化）。
+    // REQ-7 分源捕获格式策略：Process 查询不可用（wasapi 0.26 get_mixformat →
+    // Not implemented），固定 48k；System/Mic 查询设备 GetMixFormat 取原生采样率
+    // （仅采样率原生，仍请求 f32/双声道），失败回退 48k + autoconvert。
+    let queried = match target {
+        CaptureTarget::Process { .. } => None,
+        CaptureTarget::DeviceLoopback | CaptureTarget::Microphone { .. } => {
+            match client.get_mixformat() {
+                Ok(f) => Some(f.get_samplespersec()),
+                Err(e) => {
+                    eprintln!(
+                        "[sr-audio] GetMixFormat 查询失败，回退 {}Hz + autoconvert（不阻断录制）: {e:?}",
+                        PIPELINE_SAMPLE_RATE
+                    );
+                    None
+                }
+            }
+        }
+    };
+    let capture_format = capture_format_strategy(target, queried);
     let format = WaveFormat::new(
         32,
         32,
         &SampleType::Float,
-        PIPELINE_SAMPLE_RATE as usize,
-        PIPELINE_CHANNELS as usize,
+        capture_format.sample_rate as usize,
+        capture_format.channels as usize,
         None,
     );
     client
@@ -416,10 +466,11 @@ where
     client
         .start_stream()
         .map_err(|e| stage_error(target, "start_stream 失败", format!("{e:?}")))?;
-    ready();
+    ready(capture_format);
 
-    let channels = PIPELINE_CHANNELS as usize;
-    let mut timeline = CaptureTimeline::new(PIPELINE_SAMPLE_RATE);
+    let target_frames = wall.map(|w| sync_target_frames(w, capture_format.sample_rate));
+    let channels = capture_format.channels as usize;
+    let mut timeline = CaptureTimeline::new(capture_format.sample_rate);
     let mut stats = CaptureStats::default();
     let mut buf: Vec<u8> = Vec::new();
     let mut had_t0 = false;
@@ -516,17 +567,16 @@ where
         }
     }
     let _ = client.stop_stream();
-    Ok(stats)
+    Ok((stats, capture_format))
 }
 
 // ─────────────────────────── 内存 API（红测试一等入口；S3 record 同构） ───────────────────────────
 
 /// 同步「录 N 秒返回」共用实现：专用 MTA 线程采集 → 样本槽编排（静音补齐/迟到
-/// 裁切/墙钟续流）→ 时长按请求值精确补齐（±48 帧内截断）。
+/// 裁切/墙钟续流）→ 时长按请求值与**实际捕获率**钉齐（±48 帧内截断；REQ-8）。
 fn capture_sync(target: CaptureTarget, duration: Duration) -> Result<CapturedPcm, CaptureError> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_thread = stop.clone();
-    let target_frames = (duration.as_secs_f64() * PIPELINE_SAMPLE_RATE as f64).round() as u64;
     let name = match &target {
         CaptureTarget::Process { pid } => format!("sr-audio-loopback-{pid}"),
         CaptureTarget::DeviceLoopback => "sr-audio-device-loopback".into(),
@@ -537,32 +587,31 @@ fn capture_sync(target: CaptureTarget, duration: Duration) -> Result<CapturedPcm
         .name(name)
         .spawn(move || {
             let mut samples: Vec<f32> = Vec::new();
+            let channels = std::cell::Cell::new(PIPELINE_CHANNELS as usize);
+            let mut ready = |fmt: CaptureFormat| channels.set(fmt.channels as usize);
             let mut sink = |plan: PacketPlan, payload: &[f32]| -> bool {
                 samples.resize(
-                    samples.len() + plan.pad_frames as usize * PIPELINE_CHANNELS as usize,
+                    samples.len() + plan.pad_frames as usize * channels.get(),
                     0.0,
                 );
                 samples.extend_from_slice(payload);
                 true
             };
-            let mut ready = || {};
-            let stats = run_capture_core(
+            let (stats, fmt) = run_capture_core(
                 &target,
                 &stop_thread,
-                EndMode::Duration {
-                    wall: duration,
-                    target_frames,
-                },
+                EndMode::Duration { wall: duration },
                 &mut ready,
                 &mut sink,
             )?;
             // 排水位可因末批包越过请求时长而略超：截到恰请求帧数（容差 48 帧内）。
-            let exact = target_frames as usize * PIPELINE_CHANNELS as usize;
+            let target_frames = sync_target_frames(duration, fmt.sample_rate);
+            let exact = target_frames as usize * fmt.channels as usize;
             samples.truncate(exact);
             Ok(CapturedPcm {
                 samples,
-                sample_rate: PIPELINE_SAMPLE_RATE,
-                channels: PIPELINE_CHANNELS,
+                sample_rate: fmt.sample_rate,
+                channels: fmt.channels,
                 stats,
             })
         })
@@ -655,6 +704,51 @@ pub fn list_capture_devices() -> Result<Vec<AudioDeviceInfo>, CaptureError> {
     }
 }
 
+// ─────────────────────────── 端点混音率查询（M15/REQ-2，UI 只读展示） ───────────────────────────
+
+/// 端点原生混音率（REQ-2；仅用于设置页如实展示，**不得用于推导重采样比率**）。
+///
+/// `kind` = `"render"`（默认渲染端点 / System 来源）或 `"capture"`（麦克风设备）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndpointMixRate {
+    pub rate: u32,
+    pub kind: &'static str,
+    pub device_name: String,
+}
+
+/// 查询端点混音率（REQ-2）：`device_id=None` → 默认渲染端点；`Some(id)` → 采集
+/// 设备。专用 MTA 线程执行；任何失败返回 `None`（UI 显示「未知」，与
+/// `probe_capabilities` 隔离；不阻断录制/不参与重采样比率推导）。
+pub fn query_endpoint_mix_rate(device_id: Option<String>) -> Option<EndpointMixRate> {
+    let handle = std::thread::Builder::new()
+        .name("sr-audio-mix-rate".into())
+        .spawn(move || -> Option<EndpointMixRate> {
+            let _ = wasapi::initialize_mta();
+            let enumerator = DeviceEnumerator::new().ok()?;
+            let (device, kind) = match device_id {
+                None => (
+                    enumerator.get_default_device(&Direction::Render).ok()?,
+                    "render",
+                ),
+                Some(id) => (enumerator.get_device(&id).ok()?, "capture"),
+            };
+            let name = device.get_friendlyname().unwrap_or_default();
+            let client = device.get_iaudioclient().ok()?;
+            let rate = client.get_mixformat().ok()?.get_samplespersec();
+            Some(EndpointMixRate {
+                rate,
+                kind,
+                device_name: if name.is_empty() {
+                    "未命名端点".to_string()
+                } else {
+                    name
+                },
+            })
+        })
+        .ok()?;
+    handle.join().ok().flatten()
+}
+
 // ─────────────────────────── 流式 API（路由管道写；与内存 API 同核） ───────────────────────────
 
 /// 流式采集事件（Pcm：先写 `plan.pad_frames` 帧零再写 samples）。
@@ -669,16 +763,19 @@ pub enum StreamEvent {
 }
 
 enum StreamMsg {
-    Ready,
+    /// 激活完成 + 实际捕获格式（REQ-8：路由不得假设捕获率）。
+    Ready(CaptureFormat),
     Event(StreamEvent),
 }
 
 /// 流式采集（M6：进程环回/设备环回/麦克风同一采集核；每音轨一个；激活结果经
-/// Ready 握手同步给启动方）。
+/// Ready 握手同步给启动方，携带实际捕获格式）。
 pub struct LoopbackStream {
     rx: mpsc::Receiver<StreamMsg>,
     stop: Arc<AtomicBool>,
     join: Mutex<Option<JoinHandle<()>>>,
+    /// Ready 握手收到的实际捕获格式（REQ-8）。
+    format: CaptureFormat,
 }
 
 impl LoopbackStream {
@@ -712,8 +809,8 @@ impl LoopbackStream {
                     }))
                     .is_ok()
                 };
-                let mut ready = || {
-                    let _ = tx.send(StreamMsg::Ready);
+                let mut ready = |fmt: CaptureFormat| {
+                    let _ = tx.send(StreamMsg::Ready(fmt));
                 };
                 match run_capture_core(
                     &target,
@@ -722,7 +819,7 @@ impl LoopbackStream {
                     &mut ready,
                     &mut sink,
                 ) {
-                    Ok(stats) => {
+                    Ok((stats, _fmt)) => {
                         if diag_enabled() {
                             eprintln!(
                                 "[diag-audio] {diag_label}: packets={} padded={} dropped={} discontinuities={}",
@@ -747,10 +844,11 @@ impl LoopbackStream {
 
         // 激活握手（激活实测 1–6ms；5s 上限覆盖慢端点环境）。
         match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(StreamMsg::Ready) => Ok(Self {
+            Ok(StreamMsg::Ready(format)) => Ok(Self {
                 rx,
                 stop,
                 join: Mutex::new(Some(join)),
+                format,
             }),
             Ok(StreamMsg::Event(StreamEvent::Error(e))) => Err(e),
             Ok(StreamMsg::Event(StreamEvent::Pcm { .. })) => Err(CaptureError::Failed {
@@ -766,10 +864,15 @@ impl LoopbackStream {
         }
     }
 
+    /// 实际捕获格式（Ready 握手回传；REQ-8 路由据此构造重采样器）。
+    pub fn capture_format(&self) -> CaptureFormat {
+        self.format
+    }
+
     /// 取下一事件（超时返回 None；调用方轮询 stop 标志）。
     pub fn recv_timeout(&self, timeout: Duration) -> Option<StreamEvent> {
         match self.rx.recv_timeout(timeout) {
-            Ok(StreamMsg::Ready) => self.recv_timeout(timeout),
+            Ok(StreamMsg::Ready(_)) => self.recv_timeout(timeout),
             Ok(StreamMsg::Event(e)) => Some(e),
             Err(mpsc::RecvTimeoutError::Timeout) => None,
             Err(mpsc::RecvTimeoutError::Disconnected) => None,
@@ -782,5 +885,94 @@ impl LoopbackStream {
         if let Some(h) = self.join.lock().expect("流式采集 join 锁").take() {
             let _ = h.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unit_capture_format_strategy_system_uses_native_rate() {
+        let fmt = capture_format_strategy(&CaptureTarget::DeviceLoopback, Some(96_000));
+        assert_eq!(
+            fmt.sample_rate, 96_000,
+            "REQ-7：System 查询到原生率 → 按原生率请求（仅采样率原生，仍 f32/双声道）"
+        );
+        assert_eq!(fmt.channels, 2, "REQ-7：解码固定双声道");
+    }
+
+    #[test]
+    fn unit_capture_format_strategy_mic_uses_native_rate() {
+        let fmt = capture_format_strategy(
+            &CaptureTarget::Microphone {
+                device: "mic-1".into(),
+            },
+            Some(44_100),
+        );
+        assert_eq!(
+            fmt.sample_rate, 44_100,
+            "REQ-7：Mic 查询到原生率 → 按原生率请求"
+        );
+        assert_eq!(fmt.channels, 2);
+    }
+
+    #[test]
+    fn unit_capture_format_strategy_query_failure_falls_back_48k() {
+        for target in [
+            CaptureTarget::DeviceLoopback,
+            CaptureTarget::Microphone {
+                device: "mic-1".into(),
+            },
+        ] {
+            let fmt = capture_format_strategy(&target, None);
+            assert_eq!(
+                fmt.sample_rate, 48_000,
+                "REQ-7：查询失败 → 回退 48000 + autoconvert（现状行为），不阻断录制"
+            );
+            assert_eq!(fmt.channels, 2);
+        }
+    }
+
+    #[test]
+    fn unit_capture_format_strategy_process_never_queries() {
+        // 进程环回 GetMixFormat 不可用：即使调用方提供了“查询结果”也必须固定 48k。
+        let fmt = capture_format_strategy(&CaptureTarget::Process { pid: 1 }, Some(96_000));
+        assert_eq!(
+            fmt.sample_rate, 48_000,
+            "REQ-7：Process 固定请求 48000/f32/双声道 + autoconvert"
+        );
+        assert_eq!(fmt.channels, 2);
+    }
+
+    #[test]
+    fn unit_capture_format_strategy_ready_carries_actual_rate_and_channels() {
+        // REQ-8：Ready 握手必须携带实际捕获格式（路由据此构造 DriftResampler）。
+        let msg = StreamMsg::Ready(CaptureFormat {
+            sample_rate: 44_100,
+            channels: 2,
+        });
+        match msg {
+            StreamMsg::Ready(fmt) => {
+                assert_eq!(fmt.sample_rate, 44_100, "Ready 应携带实际捕获率");
+                assert_eq!(fmt.channels, 2, "Ready 应携带实际声道数");
+            }
+            _ => panic!("Ready 变体形状不符"),
+        }
+    }
+
+    #[test]
+    fn unit_capture_format_strategy_sync_frames_use_capture_rate() {
+        // REQ-8：同步捕获路径的时长钉齐以实际捕获率为域（96k 6s = 576000 帧）。
+        assert_eq!(
+            sync_target_frames(Duration::from_secs(6), 96_000),
+            576_000,
+            "同步捕获目标帧数应使用实际捕获率（不得固定 48k）"
+        );
+        assert_eq!(
+            sync_target_frames(Duration::from_secs(6), 44_100),
+            264_600,
+            "44.1k 捕获目标帧数"
+        );
     }
 }

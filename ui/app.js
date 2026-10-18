@@ -61,6 +61,16 @@ function toast(kind, msg, path) {
 const state = {
   view: 'record',
   settings: null,
+  endpointRates: {
+    seq: 0,
+    render: null,
+    renderStatus: 'idle',
+    renderError: null,
+    mic: null,
+    micStatus: 'idle',
+    micError: null,
+    micDevice: null,
+  },
   caps: null,
   monitors: [],
   windows: [],
@@ -907,6 +917,16 @@ function renderSettings() {
       </div>
     </div>
     <div class="field">
+      <label>录制音频采样率</label>
+      <select id="set-sr">
+        <option value="44100" ${(s.audio_sample_rate || 48000) === 44100 ? 'selected' : ''}>44.1 kHz</option>
+        <option value="48000" ${(s.audio_sample_rate || 48000) === 48000 ? 'selected' : ''}>48 kHz（默认）</option>
+        <option value="88200" ${(s.audio_sample_rate || 48000) === 88200 ? 'selected' : ''}>88.2 kHz</option>
+        <option value="96000" ${(s.audio_sample_rate || 48000) === 96000 ? 'selected' : ''}>96 kHz</option>
+      </select>
+      <div class="hint" id="set-sample-rate-note">原生混音率查询中…</div>
+    </div>
+    <div class="field">
       <label>默认音轨模式</label>
       <select id="set-audiomode">
         <option value="isolated" ${s.default_audio_mode === 'isolated' ? 'selected' : ''}>隔离（仅目标应用）</option>
@@ -940,6 +960,7 @@ function renderSettings() {
     const next = {
       output_dir: $('#set-outdir').value.trim(),
       fps: Number($('#set-fps').value),
+      audio_sample_rate: Number($('#set-sr').value),
       cursor: $('#set-cursor').checked,
       default_audio_mode: $('#set-audiomode').value,
       mic_device: $('#set-mic').value || null,
@@ -959,6 +980,85 @@ function renderSettings() {
       toast('err', `保存失败：${e}`);
     }
   });
+
+  // REQ-2 刷新时机：设置页打开 + 麦克风设备选择变更。未知/失败只在展示层降级，
+  // 不参与重采样比率推导，也不阻断录制（捕获侧另有 REQ-7 回退）。
+  $('#set-sr').addEventListener('change', () => renderSampleRateNote());
+  $('#set-mic').addEventListener('change', () => refreshSampleRates());
+  refreshSampleRates();
+}
+
+/// 原生率展示（REQ-2）：渲染端点 / 麦克风 = 设备混音率；进程环回如实标注
+/// 「跟随引擎混音率（通常 48k）」；所选 > 已知原生率时提示升采样。
+function renderSampleRateNote() {
+  const note = $('#set-sample-rate-note');
+  if (!note) return;
+  const selected = Number($('#set-sr')?.value || state.settings?.audio_sample_rate || 48000);
+  const info = state.endpointRates;
+  const describe = (label, status, value, error) => {
+    if (status === 'loading') return `${label}：查询中…`;
+    if (status === 'error') return `${label}：未知（查询失败${error ? `：${error}` : ''}）`;
+    if (status === 'ok' && value) return `${label}：${value.rate} Hz（${value.device_name}）`;
+    if (status === 'unknown') return `${label}：未知`;
+    return `${label}：未查询`;
+  };
+  const parts = [];
+  parts.push(describe('渲染端点原生混音率', info.renderStatus, info.render, info.renderError));
+  const micDevice = $('#set-mic')?.value || null;
+  if (!micDevice) parts.push('麦克风采集：未启用');
+  else parts.push(describe('麦克风原生混音率', info.micStatus, info.mic, info.micError));
+  parts.push('进程环回：跟随引擎混音率（通常 48k）');
+
+  // 只使用「已知」原生率计算提示；未知/失败值不参与（REQ-2）。
+  const known = [];
+  if (info.renderStatus === 'ok' && info.render) {
+    known.push({ label: '渲染端点', rate: info.render.rate });
+  }
+  if (micDevice && info.micStatus === 'ok' && info.mic) {
+    known.push({ label: '麦克风', rate: info.mic.rate });
+  }
+  const exceeded = known.filter((k) => selected > k.rate);
+  if (exceeded.length) {
+    parts.push(`升采样（不提升真实音质）：所选 ${selected} Hz 高于${exceeded
+      .map((k) => `${k.label}原生 ${k.rate} Hz`)
+      .join('、')}。`);
+  }
+  note.textContent = parts.join(' ｜ ');
+}
+
+/// 查询当前渲染端点 + 所选麦克风设备原生混音率（并发；seq 防过期结果覆盖）。
+async function refreshSampleRates() {
+  const note = $('#set-sample-rate-note');
+  if (!note) return;
+  const micDevice = $('#set-mic')?.value || null;
+  const seq = ++state.endpointRates.seq;
+  state.endpointRates.micDevice = micDevice;
+  state.endpointRates.renderStatus = 'loading';
+  state.endpointRates.micStatus = micDevice ? 'loading' : 'idle';
+  state.endpointRates.renderError = null;
+  state.endpointRates.micError = null;
+  renderSampleRateNote();
+
+  const probe = async (deviceId) => {
+    try {
+      const value = await api.getEndpointMixRate(deviceId);
+      return value ? { status: 'ok', value } : { status: 'unknown', value: null };
+    } catch (e) {
+      return { status: 'error', value: null, error: String(e) };
+    }
+  };
+  const [render, mic] = await Promise.all([
+    probe(null),
+    micDevice ? probe(micDevice) : Promise.resolve({ status: 'idle', value: null }),
+  ]);
+  if (seq !== state.endpointRates.seq) return; // 过期结果（设备/页面已切换）
+  state.endpointRates.render = render.value;
+  state.endpointRates.renderStatus = render.status;
+  state.endpointRates.renderError = render.error || null;
+  state.endpointRates.mic = mic.value;
+  state.endpointRates.micStatus = mic.status;
+  state.endpointRates.micError = mic.error || null;
+  renderSampleRateNote();
 }
 
 function applySettingsDefaults() {

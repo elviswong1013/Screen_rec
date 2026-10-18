@@ -290,7 +290,7 @@ L2 验证手法：测试助手播放可区分音调（A=440Hz、B=880Hz、麦克
 | M11 整改（R1 退回项） | 区域覆盖层 UI、Timeline/Drift 接线、纯录音恢复、原子 safe_commit、编码器设置、托盘启停、NSIS 安装包 | `m11_*` 套件 | R1 五项退回清零。**状态：达成（2026-10-17）** |
 | M12 整改（R2/R3 退回项） | 截图前隐藏覆盖层、safe_commit 竞态、rubato+flush；区域覆盖层 async 重入死锁根因修复（open_region_overlay）、P2 失败提示保留覆盖层、fmt 全绿、E2E 工具链（tools/e2e） | m12-a..h 报告、m12-d/m12n E2E 证据 | 区域 E2E 7/7、sync/soak 最终源码复跑绿、安装包 M12-F 自检 PASS；sync 间歇失败根因定性为会话/显示切换（m12-h，含 SR_DIAG_AV 门控诊断）。**状态：达成（2026-10-18）** |
 | M13 P1 音频内容完整性 | WASAPI 补齐/裁切互抵修复：`pad_to_wall_clock` + 50ms 停滞阈值（slots.rs/wasapi.rs）；3 项确定性回归（stall_pad_policy.rs，红→绿验证） | m13-report、m13-content-integrity、m13-* 全套日志 | 610s 双路静音替换量 12.48–49.75s → **0.000s**（payload 满时长）；sync 99.6/93.3ms、soak 620s×2 padded=0/dropped=0；10 套短测 + 区域 E2E 全绿；安装包 M12-G（SHA256 A99BE175…05D29）自检 PASS。**状态：达成——acc-5 ACCEPTED（2026-10-18，按已声明环境验证范围）** |
-| M14 成品成功后清理原段 | REQ-21/REQ-24 保留策略闭环：默认成功后递归删除 `.screenrec_tmp/<session>`；设置 `keep_segments`（默认 false）开启时保留原段；失败/崩溃路径不删 | route L1 单测 + m11_route_commit L2（默认清理 / keep=true 保留）+ 应用层真实验证 | 成功后会话目录消失（默认）/保留（keep=true）；失败路径断言不变。M14b（2026-10-18）：纯录音 `start_audio_only` 成功收尾纳入同一策略（默认清理会话目录 / `keep_segments=true` 保留；失败/崩溃不删）。**状态：达成（2026-10-18）** |
+| M14 成品成功后清理原段 | REQ-21/REQ-24 保留策略闭环：默认成功后递归删除 `.screenrec_tmp/<session>`；设置 `keep_segments`（默认 false）开启时保留原段；失败/崩溃路径不删 | route L1 单测 + m11_route_commit L2（默认清理 / keep=true 保留）+ 应用层真实验证 | 成功后会话目录消失（默认）/保留（keep=true）；失败路径断言不变。M14b（2026-10-18）：纯录音 `start_audio_only` 成功收尾纳入同一策略（默认清理会话目录 / `keep_segments=true` 保留；失败/崩溃不删）。M14c（2026-10-18）：**含恢复收尾**——`recover_sessions`→`finalize_session` 成品验证成功后同样按 `keep_segments` 清理/保留原段；删除失败仅日志、不判收尾失败；失败/崩溃路径语义不变。**状态：达成（2026-10-18）** |
 
 ## 6. Out of scope
 

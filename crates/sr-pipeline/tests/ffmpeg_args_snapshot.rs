@@ -8,7 +8,8 @@
 //!
 //! 接口契约（测试即契约，详见 docs/milestones/m3-red-report.md）：
 //! - `sr_pipeline::sidecar::VideoPipeSpec { width, height, fps, pipe_path: String }`
-//! - `sr_pipeline::sidecar::AudioPipeSpec { pipe_path: String }`（f32le/48k/立体声固定，§3.3）
+//! - `sr_pipeline::sidecar::AudioPipeSpec { pipe_path: String, sample_rate: u32 }`
+//!   （f32le/输出率/立体声；M15/REQ-3 `-ar` 参数化）
 //! - `sr_pipeline::sidecar::build_encode_args(video, audio, video_encoder, segment_secs,
 //!    segment_list, output_pattern) -> Vec<String>`
 //!
@@ -59,6 +60,7 @@ fn unit_ffmpeg_args_snapshot() {
         },
         &[AudioPipeSpec {
             pipe_path: pipe_a.clone(),
+            sample_rate: 48_000,
         }],
         "h264_qsv",
         5,
@@ -203,4 +205,43 @@ fn unit_ffmpeg_args_snapshot() {
         Some(pattern2.to_string_lossy().as_ref()),
         "输出 pattern 应为最后一个参数"
     );
+}
+
+/// M15/REQ-3：sidecar 输入 `-ar` 随输出率参数化（44.1k/88.2k/96k），不再硬编码 48000。
+#[test]
+fn unit_ffmpeg_args_audio_rate_parameterized() {
+    let list = tmp("segments_rate.ffconcat");
+    let pattern = tmp("out_rate_%05d.mkv");
+    for rate in [44_100u32, 88_200, 96_000] {
+        let args = build_encode_args(
+            &VideoPipeSpec {
+                width: 640,
+                height: 360,
+                fps: 30,
+                pipe_path: r"\\.\pipe\screenrec_rate_v".to_string(),
+            },
+            &[AudioPipeSpec {
+                pipe_path: r"\\.\pipe\screenrec_rate_a0".to_string(),
+                sample_rate: rate,
+            }],
+            "h264_mf",
+            5,
+            &list,
+            &pattern,
+        );
+        let seq = [
+            "-f".to_string(),
+            "f32le".to_string(),
+            "-ar".to_string(),
+            rate.to_string(),
+            "-ac".to_string(),
+            "2".to_string(),
+            "-i".to_string(),
+            r"\\.\pipe\screenrec_rate_a0".to_string(),
+        ];
+        assert!(
+            args.windows(seq.len()).any(|w| w == seq),
+            "REQ-3：-ar 应参数化为 {rate}（argv: {args:?}）"
+        );
+    }
 }

@@ -217,6 +217,14 @@ pub struct AudioDeviceOut {
     pub is_default: bool,
 }
 
+/// 端点原生混音率（M15/REQ-2：UI 只读展示；`kind` = `render` | `capture`）。
+#[derive(Clone, Debug, Serialize)]
+pub struct EndpointMixRateOut {
+    pub rate: u32,
+    pub kind: String,
+    pub device_name: String,
+}
+
 /// `probe_capabilities` 回执（REQ-28；`*_ok` 为各层归类的布尔投影，明细见 `layers`）。
 #[derive(Clone, Debug, Serialize)]
 pub struct ProbeOut {
@@ -304,7 +312,7 @@ pub struct RecoverSessionsOut {
     pub sessions: Vec<SessionOut>,
 }
 
-/// `finalize_session` 回执（REQ-22：幂等；原段永不删除）。
+/// `finalize_session` 回执（REQ-22：幂等；成功后按 `keep_segments` 清理/保留原段）。
 #[derive(Clone, Debug, Serialize)]
 pub struct FinalizeSessionOut {
     pub finals: Vec<RouteFinalOut>,
@@ -699,6 +707,26 @@ pub async fn list_audio_devices() -> Result<Vec<AudioDeviceOut>, String> {
     .await
 }
 
+/// M15/REQ-2：`get_endpoint_mix_rate(device_id?) -> Option<{rate,kind,device_name}>`。
+///
+/// `device_id=None` → 默认渲染端点（`kind="render"`）；`Some(id)` → 麦克风采集
+/// 设备（`kind="capture"`）。MTA 线程在 `sr-audio` 内执行；任何失败返回 `null`
+/// （UI 显示「未知」）。与 `probe_capabilities` 完全隔离：查询失败不影响能力
+/// 探测/录制（捕获初始化自身还有 REQ-7 的回退）。**查询值不用于推导重采样比率。**
+#[tauri::command]
+pub async fn get_endpoint_mix_rate(device_id: Option<String>) -> Option<EndpointMixRateOut> {
+    tauri::async_runtime::spawn_blocking(move || {
+        sr_audio::wasapi::query_endpoint_mix_rate(device_id).map(|m| EndpointMixRateOut {
+            rate: m.rate,
+            kind: m.kind.to_string(),
+            device_name: m.device_name,
+        })
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// §3.3：`start_routes(Vec<RouteConfigIn>) -> {route_ids}`——批量启动（**全成功或回滚**，
 /// 复用 sr-pipeline `start_routes`）。Ok = 各路均已「输出开始」（§3.1）。
 #[tauri::command]
@@ -717,10 +745,17 @@ pub(crate) fn start_routes_impl(
     let cfgs = plan_routes(routes.clone())?;
     // P2：设置中的编码器经命令 DTO → 管线（Auto=探测；显式名须实际初始化成功）。
     // M14：设置 keep_segments 原样透传（默认 false = 成功后自动清理原段）。
+    // M15/REQ-1/8：启动读取一次设置快照，输出率随 start_routes 入口传入管线；
+    // 在录路由不随保存变更（托盘「开始」同样在调用时取新快照）。
     let settings = current_settings(&app);
     let encoder = encoder_override(&settings);
-    let handles = route::start_routes_with_options(cfgs, encoder, settings.keep_segments)
-        .map_err(|e| e.to_string())?;
+    let handles = route::start_routes_with_options_and_rate(
+        cfgs,
+        encoder,
+        settings.keep_segments,
+        settings.audio_sample_rate,
+    )
+    .map_err(|e| e.to_string())?;
     let state = app.state::<CommandsState>();
     let ids = state.alloc_ids(handles.len());
     for (id, handle) in ids.iter().zip(handles) {
@@ -744,15 +779,17 @@ pub async fn start_audio_only(
     blocking(move || {
         let specs = plan_audio_only(sources)?;
         let count = specs.len();
-        let keep_segments = current_settings(&app).keep_segments;
+        // M15/REQ-1/3：一次设置快照决定 WAV 输出率；在录路由不随保存变更。
+        let settings = current_settings(&app);
         let dir = resolve_output_dir(&app, output_dir);
         // M14b：纯录音成功收尾按设置清理/保留会话目录（默认 false = 自动清理）。
-        let handle = route::start_audio_only_with_options(
+        let handle = route::start_audio_only_with_options_and_rate(
             AudioOnlyConfig {
                 sources: specs,
                 output_dir: PathBuf::from(dir),
             },
-            keep_segments,
+            settings.keep_segments,
+            settings.audio_sample_rate,
         )
         .map_err(|e| e.to_string())?;
         let state = app.state::<CommandsState>();
@@ -937,7 +974,8 @@ pub async fn recover_sessions(app: AppHandle) -> Result<RecoverSessionsOut, Stri
     .await
 }
 
-/// §3.3：`finalize_session(session_id)`——崩溃残留收尾（幂等；原段永不删除，REQ-22）。
+/// §3.3：`finalize_session(session_id)`——崩溃残留收尾（幂等；成功后按 `keep_segments`
+/// 清理/保留原段，REQ-22 + M14c）。
 #[tauri::command]
 pub async fn finalize_session(
     app: AppHandle,
@@ -945,7 +983,10 @@ pub async fn finalize_session(
 ) -> Result<FinalizeSessionOut, String> {
     blocking(move || {
         let dir = session_dir_for(&app, &session_id)?;
-        let outcome = recovery::finalize_session(&dir).map_err(|e| recovery_error_string(&e))?;
+        // M14c：与正常收尾共用设置保留策略（默认 false = 成品验证成功后清理原段）。
+        let keep_segments = current_settings(&app).keep_segments;
+        let outcome = recovery::finalize_session_with_options(&dir, keep_segments)
+            .map_err(|e| recovery_error_string(&e))?;
         app.state::<CommandsState>().remove_recovery(&session_id);
         Ok(FinalizeSessionOut {
             finals: outcome

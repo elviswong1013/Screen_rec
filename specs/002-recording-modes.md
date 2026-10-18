@@ -1,6 +1,6 @@
 # 002 - Screen_rec 录制模式扩展（SDD）
 
-Status: Draft
+Status: Approved
 Created: 2026-10-18
 Updated: 2026-10-18（plan-reviewer R1：三率域/基础比率/测试覆盖/serde 与 UI 契约；R2：分源捕获策略、实际率传递与计数域、四档测试、JSON 边界容错、查询契约定稿）
 PRD: `docs/prd/002-recording-modes.md`（Approved 2026-10-18）
@@ -95,4 +95,4 @@ PRD: `docs/prd/002-recording-modes.md`（Approved 2026-10-18）
 
 | 阶段 | 内容（REQ） | 通过条件 |
 |---|---|---|
-| M15（P1） | 采样率可选（REQ-1..8） | §4 全绿 + acceptor |
+| M15（P1） | 采样率可选（REQ-1..8） | **已实现，待 acceptor**（L1/L2 证据：`docs/milestones/m15-report.md`；audio_m6 麦克风正路径本机无采集设备 → BLOCKED） |

@@ -20,7 +20,7 @@ fn sine_stereo(frames: usize, hz: f64) -> Vec<f32> {
 #[test]
 fn zero_ppm_is_identity_across_chunks() {
     let input = sine_stereo(4800, 440.0);
-    let mut r = DriftResampler::new(2);
+    let mut r = DriftResampler::new(2, 48_000, 48_000);
     let mut out = Vec::new();
     for chunk in input.chunks(2 * 317) {
         out.extend(r.process(chunk));
@@ -39,10 +39,10 @@ fn zero_ppm_is_identity_across_chunks() {
 #[test]
 fn positive_500ppm_shortens_and_negative_lengthens() {
     let input = sine_stereo(48_000, 440.0); // 1s
-    let mut fast = DriftResampler::new(2);
+    let mut fast = DriftResampler::new(2, 48_000, 48_000);
     fast.set_rate_ppm(500.0);
     let out_fast = fast.process(&input);
-    let mut slow = DriftResampler::new(2);
+    let mut slow = DriftResampler::new(2, 48_000, 48_000);
     slow.set_rate_ppm(-500.0);
     let out_slow = slow.process(&input);
 
@@ -64,10 +64,10 @@ fn positive_500ppm_shortens_and_negative_lengthens() {
 #[test]
 fn chunked_and_oneshot_are_equivalent() {
     let input = sine_stereo(20_000, 1000.0);
-    let mut one = DriftResampler::new(2);
+    let mut one = DriftResampler::new(2, 48_000, 48_000);
     one.set_rate_ppm(300.0);
     let a = one.process(&input);
-    let mut chunked = DriftResampler::new(2);
+    let mut chunked = DriftResampler::new(2, 48_000, 48_000);
     chunked.set_rate_ppm(300.0);
     let mut b = Vec::new();
     for chunk in input.chunks(2 * 511) {
@@ -85,7 +85,7 @@ fn chunked_and_oneshot_are_equivalent() {
 
 #[test]
 fn rate_is_clamped_to_1000ppm() {
-    let mut r = DriftResampler::new(2);
+    let mut r = DriftResampler::new(2, 48_000, 48_000);
     r.set_rate_ppm(1e9);
     let out = r.process(&sine_stereo(48_000, 440.0));
     let expect = (48_000f64 / 1.001) as usize;
@@ -104,7 +104,7 @@ fn rate_is_clamped_to_1000ppm() {
 fn impulse_delay_matches_accounted_filter_delay() {
     let ppm = 500.0;
     let ratio = 1.0 / (1.0 + ppm / 1e6);
-    let mut r = DriftResampler::new(2);
+    let mut r = DriftResampler::new(2, 48_000, 48_000);
     r.set_rate_ppm(ppm);
     let delay = r.delay_frames();
     assert!(
@@ -161,7 +161,7 @@ fn sine_content_matches_compensated_ratio() {
         let step = 1.0 + ppm / 1e6;
         let ratio = 1.0 / step;
         let input = sine_stereo(48_000, 440.0);
-        let mut r = DriftResampler::new(2);
+        let mut r = DriftResampler::new(2, 48_000, 48_000);
         r.set_rate_ppm(ppm);
         let delay = r.delay_frames();
         let out = r.process(&input);
@@ -195,7 +195,7 @@ fn sine_content_matches_compensated_ratio() {
 #[test]
 fn midstream_engagement_compensates_delay_without_replay() {
     let input = sine_stereo(4800, 440.0);
-    let mut r = DriftResampler::new(2);
+    let mut r = DriftResampler::new(2, 48_000, 48_000);
     let mut out = Vec::new();
     for chunk in input[..2400 * 2].chunks(480 * 2) {
         out.extend(r.process(chunk));
@@ -210,7 +210,7 @@ fn midstream_engagement_compensates_delay_without_replay() {
 
     // 中途补偿把 rubato 的群延迟从“内容滞后”转为“流末固定短 1 个群延迟”
     // （冷启动同量延迟表现为开头斜坡）；其余帧数仍按比率累积。
-    let mut probe = DriftResampler::new(2);
+    let mut probe = DriftResampler::new(2, 48_000, 48_000);
     probe.set_rate_ppm(500.0);
     let filter_delay = probe.delay_frames();
     let ratio = 1.0 / 1.0005;
@@ -244,7 +244,7 @@ fn midstream_engagement_compensates_delay_without_replay() {
 #[test]
 fn rate_changes_keep_stream_finite_and_ratio_correct() {
     let input = sine_stereo(4800, 440.0);
-    let mut r = DriftResampler::new(2);
+    let mut r = DriftResampler::new(2, 48_000, 48_000);
     let mut emitted = 0usize;
     let mut all = Vec::new();
     for ppm in [500.0f64, 0.0, -500.0] {
@@ -266,7 +266,7 @@ fn rate_changes_keep_stream_finite_and_ratio_correct() {
 fn flush_recovers_filter_tail_and_matches_theory() {
     let ppm = 500.0;
     let ratio = 1.0 / (1.0 + ppm / 1e6);
-    let mut r = DriftResampler::new(2);
+    let mut r = DriftResampler::new(2, 48_000, 48_000);
     r.set_rate_ppm(ppm);
     let delay = r.delay_frames();
     let input = sine_stereo(48_000, 440.0);
@@ -290,7 +290,7 @@ fn flush_recovers_filter_tail_and_matches_theory() {
 #[test]
 fn flush_after_midstream_engage_matches_mixed_rate_theory() {
     let input = sine_stereo(4800, 440.0);
-    let mut r = DriftResampler::new(2);
+    let mut r = DriftResampler::new(2, 48_000, 48_000);
     let mut out = Vec::new();
     for chunk in input[..2400 * 2].chunks(480 * 2) {
         out.extend(r.process(chunk));
@@ -316,7 +316,7 @@ fn flush_after_midstream_engage_matches_mixed_rate_theory() {
 #[test]
 fn flush_passthrough_emits_held_tail_frame() {
     let input = sine_stereo(100, 440.0);
-    let mut r = DriftResampler::new(2);
+    let mut r = DriftResampler::new(2, 48_000, 48_000);
     let mut out = r.process(&input);
     assert_eq!(out.len() / 2, 99, "直通 process 仍保留 1 帧（既有契约）");
     out.extend(r.flush());
