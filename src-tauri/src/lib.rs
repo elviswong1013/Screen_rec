@@ -181,6 +181,8 @@ pub fn run() {
             commands::list_targets,
             commands::list_audio_sources,
             commands::list_audio_devices,
+            // M16/REQ-9：渲染端点枚举（显示器↔端点匹配）
+            commands::list_render_endpoints,
             // M15/REQ-2：端点原生混音率（UI 只读展示；失败返回 None）
             commands::get_endpoint_mix_rate,
             // §3.3 录制/停止（全成功或回滚；停止返回「已请求停止」）

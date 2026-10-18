@@ -141,6 +141,8 @@ pub struct Finalized {
     /// 参与收尾的段（全部 >0 字节）。默认成功后随会话目录清理；`keep_segments=true`
     /// 时保留。
     pub segments: Vec<PathBuf>,
+    /// M16/REQ-12：路级停止原因（端点失效；成功/失败分支都可读）。
+    pub stop_notice: Option<StopNotice>,
 }
 
 /// 进程内路由序号（管道名/段 pattern/清单名唯一性）。
@@ -148,6 +150,10 @@ static ROUTE_SEQ: AtomicU32 = AtomicU32::new(0);
 
 struct Shared {
     stop: AtomicBool,
+    /// M16/REQ-12：端点失效等路级停止原因（首因生效；进入快照/终态事件）。
+    stop_notice: Mutex<Option<StopNotice>>,
+    /// L2 收尾失败分支注入（[`RouteHandle::force_finalize_failure_for_tests`]）。
+    force_finalize_failure: AtomicBool,
     /// 段扫描根 = 会话临时目录（REQ-24/D12；段与 ffconcat 清单在会话目录内）。
     output_dir: PathBuf,
     /// 会话临时目录（`.screenrec_tmp/<session_id>`；manifest 维护锚点）。
@@ -173,6 +179,22 @@ impl Shared {
             *guard = Some(outcome);
             self.cond.notify_all();
         }
+    }
+
+    /// M16/REQ-12：设置路级停止原因（首因生效）并请求优雅停止。
+    fn set_stop_notice(&self, notice: StopNotice) {
+        let mut guard = self.stop_notice.lock().expect("route stop_notice 锁");
+        if guard.is_none() {
+            *guard = Some(notice);
+        }
+        self.stop.store(true, Ordering::Release);
+    }
+
+    fn stop_notice(&self) -> Option<StopNotice> {
+        self.stop_notice
+            .lock()
+            .expect("route stop_notice 锁")
+            .clone()
     }
 }
 
@@ -217,6 +239,21 @@ impl RouteHandle {
     pub fn reserved_final_path(&self) -> PathBuf {
         self.shared.final_path.clone()
     }
+
+    /// M16/REQ-12：路级停止原因（端点失效；成功/失败分支都可读，早于收尾完成）。
+    pub fn stop_notice(&self) -> Option<StopNotice> {
+        self.shared.stop_notice()
+    }
+
+    /// L2 收尾失败分支注入（`it_route_endpoint_runtime_lost_keeps_others`）：
+    /// 让本路 finalize 返回 `FinalizeFailed`，用于断言「失败仍保留原段 + notice 可读」。
+    /// 生产路径不调用；无副作用。
+    #[doc(hidden)]
+    pub fn force_finalize_failure_for_tests(&self) {
+        self.shared
+            .force_finalize_failure
+            .store(true, Ordering::Release);
+    }
 }
 
 impl Drop for RouteHandle {
@@ -245,6 +282,7 @@ impl SlotSender {
         let stop_flag = stop.clone();
         let frames = Arc::new(AtomicU64::new(0));
         let frames_thread = frames.clone();
+        let diag_route = shared.route_id.clone();
         let handle = std::thread::Builder::new()
             .name("sr-cfr-sender".into())
             .spawn(move || {
@@ -302,7 +340,7 @@ impl SlotSender {
                 }
                 if diag {
                     eprintln!(
-                        "[diag-video] slots={slots} fresh={fresh} repeats={repeats} max_repeat_run={max_run} max_late_ms={max_late_ms:.1} write_failed={write_failed}"
+                        "[diag-video:{diag_route}] slots={slots} fresh={fresh} repeats={repeats} max_repeat_run={max_run} max_late_ms={max_late_ms:.1} write_failed={write_failed}"
                     );
                 }
             })
@@ -336,6 +374,26 @@ pub struct AudioRouteConfig {
     pub video: VideoCfg,
     pub audio: Vec<AudioSourceSpec>,
     pub output_dir: PathBuf,
+}
+
+/// M16/REQ-12：路级停止原因（端点失效；进入快照/终态事件载荷）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StopNotice {
+    /// 错误码（当前仅 `E_TARGET_LOST`）。
+    pub code: String,
+    /// 失效端点名（友好名；缺名回退 device_id）。
+    pub endpoint: Option<String>,
+    /// 明细。
+    pub detail: String,
+}
+
+/// M16/REQ-13：启动时解析后的音源（System 已钉住实际 device_id）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolvedAudioSource {
+    App { pid: u32, created_at_unix_ms: u64 },
+    RenderEndpoint { device_id: String },
+    System { device_id: String },
+    Mic { device: String },
 }
 
 /// M5 多路单路配置（§3.4 RouteConfig 的多路投影；M3/M4 既有 config 字面量不动——
@@ -475,17 +533,125 @@ pub fn start_routes_with_options_and_rate(
     Ok(handles)
 }
 
-/// 按音源规格启动流式采集（同一采集核；App 先做身份前置校验）。
-fn start_audio_stream(src: &AudioSourceSpec) -> Result<LoopbackStream, CaptureError> {
+/// M16/REQ-13：启动时一次解析 System 的实际 device_id，并在轨数/管道分配前按
+/// 实际 ID 去重（endpoint==system → 单轨，保留端点失效监控语义）。
+pub fn resolve_audio_sources(
+    sources: &[AudioSourceSpec],
+    default_render_device_id: impl FnOnce() -> Option<String>,
+) -> Result<Vec<ResolvedAudioSource>, RouteError> {
+    let needs_default = sources.iter().any(|s| matches!(s, AudioSourceSpec::System));
+    let pinned_default = if needs_default {
+        default_render_device_id().ok_or_else(|| RouteError::LoopbackUnavailable {
+            detail: "System 音源：默认渲染端点解析失败（REQ-13 钉住解析）".into(),
+        })?
+    } else {
+        String::new()
+    };
+
+    let mut resolved: Vec<ResolvedAudioSource> = sources
+        .iter()
+        .map(|src| match src {
+            AudioSourceSpec::App {
+                pid,
+                created_at_unix_ms,
+            } => ResolvedAudioSource::App {
+                pid: *pid,
+                created_at_unix_ms: *created_at_unix_ms,
+            },
+            AudioSourceSpec::System => ResolvedAudioSource::System {
+                device_id: pinned_default.clone(),
+            },
+            AudioSourceSpec::Mic { device } => ResolvedAudioSource::Mic {
+                device: device.clone(),
+            },
+            AudioSourceSpec::RenderEndpoint { device_id } => ResolvedAudioSource::RenderEndpoint {
+                device_id: device_id.clone(),
+            },
+        })
+        .collect();
+
+    // 去重发生在轨数/管道分配前：端点优先保留（失效监控语义）。
+    let endpoint_ids: std::collections::HashSet<String> = resolved
+        .iter()
+        .filter_map(|s| match s {
+            ResolvedAudioSource::RenderEndpoint { device_id } => Some(device_id.clone()),
+            _ => None,
+        })
+        .collect();
+    resolved.retain(|s| match s {
+        ResolvedAudioSource::System { device_id } => !endpoint_ids.contains(device_id),
+        _ => true,
+    });
+    let mut seen_endpoints = std::collections::HashSet::new();
+    resolved.retain(|s| match s {
+        ResolvedAudioSource::RenderEndpoint { device_id } => {
+            seen_endpoints.insert(device_id.clone())
+        }
+        _ => true,
+    });
+    Ok(resolved)
+}
+
+/// 解析后音源 → 采集目标（激活用 `get_device(钉住ID)`）。
+/// App 源走进程环回 + 身份校验专用路径，故返回 None。
+pub fn capture_target_for(src: &ResolvedAudioSource) -> Option<CaptureTarget> {
     match src {
-        AudioSourceSpec::App {
+        ResolvedAudioSource::App { .. } => None,
+        ResolvedAudioSource::RenderEndpoint { device_id } => Some(CaptureTarget::RenderEndpoint {
+            device_id: device_id.clone(),
+        }),
+        ResolvedAudioSource::System { device_id } => Some(CaptureTarget::DeviceLoopback {
+            device_id: Some(device_id.clone()),
+        }),
+        ResolvedAudioSource::Mic { device } => Some(CaptureTarget::Microphone {
+            device: device.clone(),
+        }),
+    }
+}
+
+struct StartedCapture {
+    stream: LoopbackStream,
+    /// 显式端点的失效监控/notice 标签（device_id + 友好名）。
+    endpoint: Option<(String, String)>,
+}
+
+/// 按音源规格启动流式采集（同一采集核；App 先做身份前置校验）。
+fn start_audio_stream(src: &ResolvedAudioSource) -> Result<StartedCapture, CaptureError> {
+    match src {
+        ResolvedAudioSource::App {
             pid,
             created_at_unix_ms,
-        } => LoopbackStream::start(*pid, *created_at_unix_ms),
-        AudioSourceSpec::System => LoopbackStream::start_target(CaptureTarget::DeviceLoopback),
-        AudioSourceSpec::Mic { device } => {
+        } => LoopbackStream::start(*pid, *created_at_unix_ms).map(|stream| StartedCapture {
+            stream,
+            endpoint: None,
+        }),
+        ResolvedAudioSource::RenderEndpoint { device_id } => {
+            let label = sr_audio::wasapi::endpoint_friendly_name(device_id)
+                .unwrap_or_else(|| device_id.clone());
+            let stream = LoopbackStream::start_target(CaptureTarget::RenderEndpoint {
+                device_id: device_id.clone(),
+            })?;
+            Ok(StartedCapture {
+                stream,
+                endpoint: Some((device_id.clone(), label)),
+            })
+        }
+        ResolvedAudioSource::System { device_id } => {
+            LoopbackStream::start_target(CaptureTarget::DeviceLoopback {
+                device_id: Some(device_id.clone()),
+            })
+            .map(|stream| StartedCapture {
+                stream,
+                endpoint: None,
+            })
+        }
+        ResolvedAudioSource::Mic { device } => {
             LoopbackStream::start_target(CaptureTarget::Microphone {
                 device: device.clone(),
+            })
+            .map(|stream| StartedCapture {
+                stream,
+                endpoint: None,
             })
         }
     }
@@ -496,6 +662,7 @@ fn start_audio_stream(src: &AudioSourceSpec) -> Result<LoopbackStream, CaptureEr
 fn capture_start_error(e: CaptureError) -> RouteError {
     match e {
         CaptureError::LoopbackUnavailable { detail } => RouteError::LoopbackUnavailable { detail },
+        CaptureError::EndpointInvalid { detail } => RouteError::TargetInvalid { detail },
         other => RouteError::CaptureFailed {
             detail: format!("音频采集启动失败: {other:?}"),
         },
@@ -630,6 +797,19 @@ pub fn start_audio_only_with_options_and_rate(
             })?;
         }
     }
+    // M16/REQ-13：纯录音不接受端点音源；System 同样一次解析并钉住实际 device_id。
+    if cfg
+        .sources
+        .iter()
+        .any(|s| matches!(s, AudioSourceSpec::RenderEndpoint { .. }))
+    {
+        return Err(RouteError::TargetInvalid {
+            detail: "纯录音不接受 render_endpoint 音源（REQ-13）".into(),
+        });
+    }
+    let resolved_sources = resolve_audio_sources(&cfg.sources, || {
+        sr_audio::wasapi::default_render_device_id()
+    })?;
 
     std::fs::create_dir_all(&cfg.output_dir).map_err(|e| RouteError::StartFailed {
         detail: format!("创建输出目录失败（{}）: {e}", cfg.output_dir.display()),
@@ -678,11 +858,11 @@ pub fn start_audio_only_with_options_and_rate(
     // M15/REQ-8：Ready 携带实际捕获格式，写线程据此构造重采样器。
     let stop = Arc::new(AtomicBool::new(false));
     let mut streams: Vec<(LoopbackStream, sr_audio::wasapi::CaptureFormat)> = Vec::new();
-    for src in &cfg.sources {
+    for src in &resolved_sources {
         match start_audio_stream(src) {
-            Ok(s) => {
-                let fmt = s.capture_format();
-                streams.push((s, fmt));
+            Ok(started) => {
+                let fmt = started.stream.capture_format();
+                streams.push((started.stream, fmt));
             }
             Err(e) => {
                 for (s, _) in streams {
@@ -902,6 +1082,22 @@ fn audio_only_writer(
                         plan.pad_frames,
                         samples.as_slice(),
                     )?;
+                }
+                Some(StreamEvent::EndpointLost { device_id, reason }) => {
+                    // M16/REQ-12：端点失效同属运行期终止；封口已写内容并如实报错。
+                    if let Some(s) = stream.take() {
+                        s.stop();
+                    }
+                    let tail = resampler.flush();
+                    if !tail.is_empty() {
+                        writer
+                            .write_f32_interleaved(&tail)
+                            .map_err(|e| format!("WAV 写入失败: {e:?}"))?;
+                    }
+                    writer
+                        .finalize()
+                        .map_err(|e| format!("WAV 封口失败: {e:?}"))?;
+                    return Err(format!("音频采集端点失效（{device_id}）: {reason}"));
                 }
                 Some(StreamEvent::Error(e)) => {
                     // 采集流运行期终止：封口已写内容并如实报错。
@@ -1164,6 +1360,21 @@ fn start_route_impl(
         })?;
     }
 
+    // ── M16/REQ-13：一次解析并钉住 System device_id；端点启动校验（存在且为 Render）。
+    //     必须在轨数/管道分配与输出布局之前完成 —— 失败不产生路段。 ──
+    let resolved_audio =
+        resolve_audio_sources(&audio, || sr_audio::wasapi::default_render_device_id())?;
+    for src in &resolved_audio {
+        if let ResolvedAudioSource::RenderEndpoint { device_id } = src {
+            sr_audio::wasapi::validate_render_endpoint(device_id).map_err(|e| match e {
+                CaptureError::EndpointInvalid { detail } => RouteError::TargetInvalid { detail },
+                other => RouteError::CaptureFailed {
+                    detail: format!("端点启动校验失败: {other:?}"),
+                },
+            })?;
+        }
+    }
+
     // ── 输出布局（REQ-24/D12：成品名 = {ts}_{sanitize(目标名)}.mkv；纯分配禁覆盖；
     //     段/ffconcat 清单落会话临时目录 <output>/.screenrec_tmp/<session_id>；
     //     会话开始时创建并写 manifest（原子；REQ-22 恢复锚点）。 ──
@@ -1200,7 +1411,7 @@ fn start_route_impl(
             },
             streams: {
                 let mut s = vec!["v".to_string()];
-                for k in 0..audio.len() {
+                for k in 0..resolved_audio.len() {
                     s.push(format!("a{k}"));
                 }
                 s
@@ -1239,7 +1450,7 @@ fn start_route_impl(
         write_timeout: Some(PIPE_WRITE_TIMEOUT),
     };
     let mut audio_pipes = Vec::new();
-    for k in 0..audio.len() {
+    for k in 0..resolved_audio.len() {
         let name = format!(
             r"\\.\pipe\screenrec_{}_{}_{}_a{k}",
             std::process::id(),
@@ -1298,6 +1509,8 @@ fn start_route_impl(
 
     let shared = Arc::new(Shared {
         stop: AtomicBool::new(false),
+        stop_notice: Mutex::new(None),
+        force_finalize_failure: AtomicBool::new(false),
         output_dir: session_dir.clone(),
         session_dir,
         route_id,
@@ -1396,8 +1609,12 @@ fn start_route_impl(
         crate::epoch::qpc_now_ticks(),
         current_unix_ms(),
     );
-    for (k, (src, apipe)) in audio.iter().zip(audio_pipes.into_iter()).enumerate() {
-        let stream = match start_audio_stream(src) {
+    for (k, (src, apipe)) in resolved_audio
+        .iter()
+        .zip(audio_pipes.into_iter())
+        .enumerate()
+    {
+        let started = match start_audio_stream(src) {
             Ok(s) => s,
             Err(e) => {
                 shutdown_audio(&Mutex::new(audio_tracks));
@@ -1409,7 +1626,8 @@ fn start_route_impl(
                 return Err(capture_start_error(e));
             }
         };
-        let capture_format = stream.capture_format();
+        let capture_format = started.stream.capture_format();
+        let endpoint_watch = started.endpoint;
         let stop_writer = Arc::new(AtomicBool::new(false));
         let writer_stop = stop_writer.clone();
         let shared_for_writer = shared.clone();
@@ -1420,7 +1638,12 @@ fn start_route_impl(
                 .name(format!("sr-audio-pipe-{k}"))
                 .spawn(move || {
                     // 写线程独占 stream：任一退出路径先停采集（join 内部线程）再返回。
-                    let mut stream = Some(stream);
+                    let mut stream = Some(started.stream);
+                    // M16/REQ-12：显式端点 → 订阅失效通知（IMMNotificationClient 分发；
+                    // 测试注入走同一分发路径）。System/Mic/App 仍由 HRESULT 路径覆盖。
+                    let endpoint_monitor = endpoint_watch
+                        .as_ref()
+                        .map(|(device_id, _)| sr_audio::wasapi::DeviceMonitor::watch(device_id));
                     let stop_stream = |stream: &mut Option<LoopbackStream>| {
                         if let Some(s) = stream.take() {
                             s.stop();
@@ -1445,6 +1668,25 @@ fn start_route_impl(
                     let mut diag = AudioDiag::new();
                     let diag_on = sr_audio::wasapi::diag_enabled();
                     loop {
+                        // M16/REQ-12：通知链（OnDeviceRemoved/StateChanged）检测。
+                        if let Some(monitor) = &endpoint_monitor {
+                            if let Some(loss) = monitor.try_recv() {
+                                diag.flush_frames += handle_endpoint_loss(
+                                    &shared_for_writer,
+                                    &mut stream,
+                                    &writer_pipe,
+                                    &mut resampler,
+                                    channels,
+                                    &endpoint_watch,
+                                    &loss.device_id,
+                                    &loss.reason,
+                                ) as u64;
+                                if diag_on {
+                                    diag.report(k, "endpoint-lost");
+                                }
+                                return;
+                            }
+                        }
                         if writer_stop.load(Ordering::Acquire) {
                             stop_stream(&mut stream);
                             // REQ-26 停止冲刷：音频管道关闭/EOF 之前补写重采样器
@@ -1530,6 +1772,22 @@ fn start_route_impl(
                                     resampler.set_rate_ppm(ppm);
                                     next_measure = Instant::now();
                                 }
+                            }
+                            Some(StreamEvent::EndpointLost { device_id, reason }) => {
+                                diag.flush_frames += handle_endpoint_loss(
+                                    &shared_for_writer,
+                                    &mut stream,
+                                    &writer_pipe,
+                                    &mut resampler,
+                                    channels,
+                                    &endpoint_watch,
+                                    &device_id,
+                                    &reason,
+                                ) as u64;
+                                if diag_on {
+                                    diag.report(k, "endpoint-lost");
+                                }
+                                return;
                             }
                             Some(StreamEvent::Error(e)) => {
                                 record_send_error(
@@ -1626,6 +1884,33 @@ fn flush_audio_tail(
     tail.len() / channels
 }
 
+/// M16/REQ-12：写线程收到端点失效 → 记录共享 stop_notice（首因）→ shared.stop
+/// （worker 走既有优雅停路）→ 停采集并冲刷重采样尾部。返回冲刷帧数。
+fn handle_endpoint_loss(
+    shared: &Shared,
+    stream: &mut Option<LoopbackStream>,
+    pipe: &VideoPipe,
+    resampler: &mut DriftResampler,
+    channels: usize,
+    endpoint_watch: &Option<(String, String)>,
+    device_id: &str,
+    reason: &str,
+) -> usize {
+    let endpoint = endpoint_watch
+        .as_ref()
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| device_id.to_string());
+    shared.set_stop_notice(StopNotice {
+        code: "E_TARGET_LOST".to_string(),
+        endpoint: Some(endpoint),
+        detail: reason.to_string(),
+    });
+    if let Some(s) = stream.take() {
+        s.stop();
+    }
+    flush_audio_tail(pipe, shared, resampler, channels)
+}
+
 /// 记录音频管道写错误（诊断；对端死亡归因仍以 child 退出码为准）。
 fn record_send_error(shared: &Shared, e: &sr_capture::pipe::PipeWriteError) {
     if let Ok(mut se) = shared.send_error.lock() {
@@ -1683,12 +1968,25 @@ fn run_worker(ctx: RunCtx) -> Result<Finalized, RouteError> {
 
 /// 停捕获 → 停发 → EOF → 等 sidecar（超时强杀）→ 收尾。EOF 后非零退出仍归 E_SIDECAR_EXIT。
 fn graceful_stop(ctx: RunCtx) -> Result<Finalized, RouteError> {
+    let diag = sr_audio::wasapi::diag_enabled();
     stop_capture(&ctx.control);
+    if diag {
+        eprintln!("[diag-route] graceful: capture stopped");
+    }
     if let Some(mut sender) = ctx.sender.lock().expect("发送器锁").take() {
         sender.stop();
     }
+    if diag {
+        eprintln!("[diag-route] graceful: sender stopped");
+    }
     ctx.pipe.close(); // EOF：唯一优雅停止路径（S1b 实验 5a）
+    if diag {
+        eprintln!("[diag-route] graceful: video pipe closed");
+    }
     shutdown_audio(&ctx.audio);
+    if diag {
+        eprintln!("[diag-route] graceful: audio stopped");
+    }
     let code = wait_child_or_kill(&ctx.child, SIDECAR_STOP_TIMEOUT);
     match code {
         Some(0) => finalize(&ctx),
@@ -1781,6 +2079,12 @@ fn finalize(ctx: &RunCtx) -> Result<Finalized, RouteError> {
     if segments.is_empty() {
         return Err(RouteError::FinalizeFailed {
             detail: "无有效段（全部 0 字节或未写出）".into(),
+        });
+    }
+    if ctx.shared.force_finalize_failure.load(Ordering::Acquire) {
+        // L2 失败分支注入（保留原段，不清理会话目录）。
+        return Err(RouteError::FinalizeFailed {
+            detail: "test-injected finalize failure".into(),
         });
     }
 
@@ -1882,6 +2186,7 @@ fn finalize(ctx: &RunCtx) -> Result<Finalized, RouteError> {
         final_path: ctx.final_path.clone(),
         segment_list: ctx.finalize_list.clone(),
         segments,
+        stop_notice: ctx.shared.stop_notice(),
     };
     update_manifest_final(&ctx.shared, &fin.final_path);
     // M14：成品验证成功 → 按保留策略清理原段。清理失败保留会话目录并记录日志，
@@ -2168,5 +2473,121 @@ mod tests {
             "96k 捕获/48k 输出的稳态偏差应为 0（得到 {max_abs}ms）"
         );
         assert_eq!(corrections, 0, "REQ-8：不得产生虚假漂移校正");
+    }
+    // ── M16/REQ-13：System device_id 一次解析并钉住 / 去重 ──
+
+    #[test]
+    fn unit_system_target_resolution_pinned_uses_resolved_id_once() {
+        let calls = std::cell::Cell::new(0u32);
+        let resolved = resolve_audio_sources(
+            &[
+                AudioSourceSpec::RenderEndpoint {
+                    device_id: "ep-display".into(),
+                },
+                AudioSourceSpec::System,
+            ],
+            || {
+                calls.set(calls.get() + 1);
+                Some("ep-display".into())
+            },
+        )
+        .expect("解析应成功");
+        assert_eq!(calls.get(), 1, "REQ-13：System 默认端点只解析一次");
+        assert_eq!(
+            resolved,
+            vec![ResolvedAudioSource::RenderEndpoint {
+                device_id: "ep-display".into()
+            }],
+            "endpoint==system 应去重为单轨并保留端点的失效监控语义（端点在前）"
+        );
+    }
+
+    #[test]
+    fn unit_system_target_resolution_keeps_two_tracks_when_ids_differ() {
+        let resolved = resolve_audio_sources(
+            &[
+                AudioSourceSpec::RenderEndpoint {
+                    device_id: "ep-display".into(),
+                },
+                AudioSourceSpec::System,
+                AudioSourceSpec::Mic {
+                    device: "mic-1".into(),
+                },
+            ],
+            || Some("render-default".into()),
+        )
+        .expect("解析应成功");
+        assert_eq!(
+            resolved,
+            vec![
+                ResolvedAudioSource::RenderEndpoint {
+                    device_id: "ep-display".into()
+                },
+                ResolvedAudioSource::System {
+                    device_id: "render-default".into()
+                },
+                ResolvedAudioSource::Mic {
+                    device: "mic-1".into()
+                },
+            ],
+            "REQ-13：端点≠系统 → 两条；轨序保持 UI 标签序 [endpoint, system, mic]"
+        );
+    }
+
+    #[test]
+    fn unit_system_target_resolution_pinned_survives_default_change() {
+        // 第一次解析（启动快照）得到 A；此后默认端点改为 B，不得回退/重新查询。
+        let mut default = "render-A".to_string();
+        let first = resolve_audio_sources(&[AudioSourceSpec::System], || Some(default.clone()))
+            .expect("首次解析");
+        default = "render-B".to_string();
+        assert_eq!(default, "render-B", "模拟解析后默认端点已变化");
+        assert_eq!(
+            first,
+            vec![ResolvedAudioSource::System {
+                device_id: "render-A".into()
+            }],
+            "REQ-13：解析后默认设备变化 → 仍使用钉住 ID（激活不二次查询默认端点）"
+        );
+        let target = capture_target_for(&first[0]).expect("System 应映射为设备环回目标");
+        assert_eq!(
+            target,
+            CaptureTarget::DeviceLoopback {
+                device_id: Some("render-A".into())
+            },
+            "REQ-13：钉住 ID 必须进入捕获目标（激活走 get_device(钉住ID)）"
+        );
+    }
+
+    #[test]
+    fn unit_system_target_resolution_default_failure_is_explicit() {
+        let err = resolve_audio_sources(&[AudioSourceSpec::System], || None)
+            .expect_err("默认渲染端点解析失败必须显式报错");
+        assert!(
+            matches!(err, RouteError::LoopbackUnavailable { .. }),
+            "得到 {err:?}"
+        );
+    }
+
+    #[test]
+    fn unit_capture_target_maps_render_endpoint_and_mic() {
+        assert_eq!(
+            capture_target_for(&ResolvedAudioSource::RenderEndpoint {
+                device_id: "ep-1".into()
+            })
+            .expect("端点应映射"),
+            CaptureTarget::RenderEndpoint {
+                device_id: "ep-1".into()
+            }
+        );
+        assert_eq!(
+            capture_target_for(&ResolvedAudioSource::Mic {
+                device: "mic-1".into()
+            })
+            .expect("麦克风应映射"),
+            CaptureTarget::Microphone {
+                device: "mic-1".into()
+            }
+        );
     }
 }

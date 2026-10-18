@@ -7,6 +7,13 @@
 (() => {
 'use strict';
 const { api, isMock, subscribeEvents } = window.SR;
+const {
+  matchEndpoint, monitorKey, reconcileMonitorSelections, buildMonitorSources,
+} = window.SREndpointMatch;
+const {
+  mapState, isTerminal,
+  applyRouteState, applyRouteError, applyRouteFinalized, applyPending, mergeSnapshotRoute,
+} = window.SRRouteState;
 
 // ---------------------------------------------------------------------------
 // 工具
@@ -73,6 +80,8 @@ const state = {
   },
   caps: null,
   monitors: [],
+  renderEndpoints: [],
+  monitorSel: new Map(),       // stable device_path -> 每显示器音源选择（M16/REQ-10/13）
   windows: [],
   audioSources: [],
   audioDevices: [],
@@ -158,10 +167,41 @@ async function refreshTargets() {
   state.targetsLoading = true;
   renderLeftPanel();
   try {
-    const [tg, sources] = await Promise.all([api.listTargets(), api.listAudioSources()]);
+    const prevMonitors = state.monitors;
+    const prevSelectedMonitors = [...state.selected]
+      .filter((k) => k.startsWith('monitor:'))
+      .map((k) => prevMonitors.find((m) => m.index === Number(k.split(':')[1])))
+      .filter(Boolean);
+    const selectedMonitorPaths = new Set(prevSelectedMonitors.map((m) => m.device_path).filter(Boolean));
+    const selectedMonitorIndexesNoPath = new Set(
+      prevSelectedMonitors.filter((m) => !m.device_path).map((m) => m.index),
+    );
+    const [tg, sources, eps] = await Promise.all([
+      api.listTargets(),
+      api.listAudioSources(),
+      api.listRenderEndpoints().catch((e) => {
+        console.warn('[app] 渲染端点枚举失败：', e);
+        return [];
+      }),
+    ]);
     state.monitors = tg.monitors;
     state.windows = tg.windows;
     state.audioSources = sources;
+    state.renderEndpoints = eps || [];
+    // M16/REQ-10：刷新后手选不覆盖；稳定 device_path 换序不串屏。
+    state.monitorSel = reconcileMonitorSelections(state.monitorSel, state.monitors, state.renderEndpoints);
+    // 目标选择同样按 device_path 迁移（index 交换后仍指向同一物理屏）。
+    const nextSelected = new Set([...state.selected].filter((k) => !k.startsWith('monitor:')));
+    for (const path of selectedMonitorPaths) {
+      const next = state.monitors.find((m) => m.device_path === path);
+      if (next) nextSelected.add(`monitor:${next.index}`);
+    }
+    for (const idx of selectedMonitorIndexesNoPath) {
+      if (state.monitors.some((m) => m.index === idx && !m.device_path)) {
+        nextSelected.add(`monitor:${idx}`);
+      }
+    }
+    state.selected = nextSelected;
     // 清理已消失目标的选中态
     for (const key of [...state.selected]) if (!findTarget(key)) state.selected.delete(key);
   } catch (e) {
@@ -287,35 +327,49 @@ function renderConfig() {
     .map((s) => `<option value="${s}" ${cfg.canvas === s ? 'selected' : ''}>${s.replace('x', ' × ')}</option>`)
     .join('');
 
-  const hasMonitorTarget = [...state.selected].some((k) => k.startsWith('monitor:'));
+  const selectedMonitors = [...state.selected]
+    .filter((k) => k.startsWith('monitor:'))
+    .map(findTarget)
+    .filter(Boolean);
+  const hasMonitorTarget = selectedMonitors.length > 0;
   const hasWindowTarget = [...state.selected].some((k) => k.startsWith('window:'));
   const micName = micOk ? esc(state.audioDevices.find((d) => d.id === state.settings.mic_device)?.name || state.settings.mic_device) : '';
+  const micHint = micOk ? micName : state.caps?.mic_ok !== true ? '权限未允许或无设备' : '未在设置中选择设备';
 
-  let audioHtml = '';
-  if (!loopbackOk) {
-    audioHtml = `
-      ${checkRow('cfg-src-system', '系统音频（整机混合）', cfg.srcSystem)}
-      ${checkRow('cfg-src-mic', '麦克风', cfg.srcMic, !micOk, micOk ? micName : state.caps?.mic_ok !== true ? '权限未允许或无设备' : '未在设置中选择设备')}`;
-  } else if (cfg.audioMode === 'isolated') {
-    const hints = [];
-    if (hasWindowTarget) hints.push('窗口目标自动携带该应用的独立音轨；同一应用的所有窗口共享一条音轨。');
-    if (hasMonitorTarget) hints.push('显示器目标无对应应用，音源需显式选择（默认系统音频）。');
-    if (!hasWindowTarget && !hasMonitorTarget) hints.push('选择目标后，此处按目标类型给出可用音源。');
-    audioHtml = `
-      <div class="hint" style="margin:-4px 0 8px;">${hints.join(' ')}</div>
-      ${hasMonitorTarget ? checkRow('cfg-src-system', '系统音频（整机混合）', cfg.srcSystem) : ''}
-      ${checkRow('cfg-src-mic', '麦克风（独立音轨，不混音）', cfg.srcMic, !micOk, micOk ? micName : '未在设置中选择设备')}`;
+  // 窗口目标沿用既有全局勾选语义；显示器目标逐屏独立选择（REQ-10/13）。
+  let windowHtml = '';
+  if (hasWindowTarget) {
+    if (!loopbackOk) {
+      windowHtml = `
+        ${checkRow('cfg-src-system', '系统音频（整机混合）', cfg.srcSystem)}
+        ${checkRow('cfg-src-mic', '麦克风', cfg.srcMic, !micOk, micHint)}`;
+    } else if (cfg.audioMode === 'isolated') {
+      windowHtml = `
+        <div class="hint" style="margin:-4px 0 8px;">窗口目标自动携带该应用的独立音轨；同一应用的所有窗口共享一条音轨。</div>
+        ${checkRow('cfg-src-mic', '麦克风（独立音轨，不混音）', cfg.srcMic, !micOk, micHint)}`;
+    } else {
+      const apps = state.audioSources.map((a) =>
+        checkRow(`cfg-app-${a.pid}`, `${esc(a.app_name)}`, cfg.srcApps.has(a.pid), false, `${esc(a.process_name)} · PID ${a.pid}${a.active ? '' : ' · 未在发声'}`)).join('');
+      windowHtml = `
+        ${checkRow('cfg-src-system', '系统音频（整机混合）', cfg.srcSystem)}
+        ${checkRow('cfg-src-mic', '麦克风（独立音轨）', cfg.srcMic, !micOk, micHint)}
+        <div class="field" style="margin-top:8px;">
+          <label>追加应用音源（启动时快照；录制中新增音源不自动加入）</label>
+          ${apps || '<div class="empty">当前没有正在发声的应用</div>'}
+          <button class="btn-sm btn-ghost" id="cfg-apps-all">全选</button>
+        </div>`;
+    }
+  }
+
+  const monitorHtml = selectedMonitors
+    .map((m) => monitorAudioHtml(m, loopbackOk, micOk, micHint))
+    .join('');
+
+  let audioHtml;
+  if (!hasWindowTarget && !hasMonitorTarget) {
+    audioHtml = '<div class="hint">选择目标后，此处按目标类型给出可用音源。</div>';
   } else {
-    const apps = state.audioSources.map((a) =>
-      checkRow(`cfg-app-${a.pid}`, `${esc(a.app_name)}`, cfg.srcApps.has(a.pid), false, `${esc(a.process_name)} · PID ${a.pid}${a.active ? '' : ' · 未在发声'}`)).join('');
-    audioHtml = `
-      ${checkRow('cfg-src-system', '系统音频（整机混合）', cfg.srcSystem)}
-      ${checkRow('cfg-src-mic', '麦克风（独立音轨）', cfg.srcMic, !micOk, micOk ? micName : '未在设置中选择设备')}
-      <div class="field" style="margin-top:8px;">
-        <label>追加应用音源（启动时快照；录制中新增音源不自动加入）</label>
-        ${apps || '<div class="empty">当前没有正在发声的应用</div>'}
-        <button class="btn-sm btn-ghost" id="cfg-apps-all">全选</button>
-      </div>`;
+    audioHtml = `${windowHtml}${monitorHtml}`;
   }
 
   panel.innerHTML = `
@@ -340,6 +394,7 @@ function renderConfig() {
         <input type="radio" name="audio-mode" value="all_tracks" ${cfg.audioMode === 'all_tracks' ? 'checked' : ''} />
         全音轨：目标应用 + 系统 + 麦克风 + 追加应用，全部独立成轨
       </label>
+      ${hasMonitorTarget ? '<div class="hint">显示器目标使用全音轨传输契约：每屏逐项勾选均如实计入；切换隔离/全音轨不清除勾选。</div>' : ''}
     </div>
     <div class="field"><label>音源</label>${audioHtml}</div>
     <div class="field">
@@ -361,6 +416,49 @@ function renderConfig() {
     renderConfig(); renderStartBar();
   });
 
+  // 每显示器独立勾选状态（M16/REQ-13）：sources = 恰好所选条目。
+  for (const m of selectedMonitors) {
+    const sel = state.monitorSel.get(monitorKey(m));
+    if (!sel) continue;
+    bindCheck(`#cfg-mon-${m.index}-endpoint`, (v) => {
+      if (!v) {
+        sel.endpointSelected = false;
+        sel.systemSelected = true; // 取消端点 → 预选系统混合
+      } else {
+        const fromMatch = sel.match && sel.match.endpoint && sel.match.endpoint.device_id;
+        const deviceId = sel.endpointDeviceId || fromMatch || null;
+        if (!deviceId) {
+          // REQ-10⑤：Ambiguous/Unmatched 无明确候选时不得取枚举首项。
+          // 未在下拉中显式选择具体端点前，保持系统混合并明示。
+          sel.endpointSelected = false;
+          sel.systemSelected = true;
+          toast('warn', '未能唯一匹配输出端点：请先在端点下拉中选择具体设备（当前使用系统混合）');
+        } else {
+          sel.endpointSelected = true;
+          sel.endpointDeviceId = deviceId;
+        }
+      }
+      renderConfig();
+      renderStartBar();
+    });
+    bindCheck(`#cfg-mon-${m.index}-system`, (v) => { sel.systemSelected = v; renderStartBar(); });
+    bindCheck(`#cfg-mon-${m.index}-mic`, (v) => { sel.micSelected = v; renderStartBar(); });
+    const epSelect = $(`#cfg-mon-${m.index}-endpoint-select`, panel);
+    if (epSelect) {
+      epSelect.addEventListener('change', () => {
+        sel.endpointDeviceId = epSelect.value || null;
+        sel.endpointSelected = !!epSelect.value;
+        if (!epSelect.value) sel.systemSelected = true;
+        renderConfig();
+        renderStartBar();
+      });
+    }
+    state.audioSources.forEach((a) => bindCheck(`#cfg-mon-${m.index}-app-${a.pid}`, (v) => {
+      v ? sel.apps.add(a.pid) : sel.apps.delete(a.pid);
+      renderStartBar();
+    }));
+  }
+
   function bindCheck(sel, fn) {
     const el = $(sel, panel);
     if (el) el.addEventListener('change', () => { fn(el.checked); });
@@ -374,6 +472,44 @@ function checkRow(id, label, checked, disabled = false, sub = '') {
       <span>${label}</span>
       ${sub ? `<span class="sub">${sub}</span>` : ''}
     </label>`;
+}
+
+// M16/REQ-10：单显示器音源区（端点自动匹配状态 + 逐项勾选，顺序 endpoint/system/mic/apps）。
+function monitorAudioHtml(m, loopbackOk, micOk, micHint) {
+  const key = monitorKey(m);
+  const sel = state.monitorSel.get(key);
+  const match = (sel && sel.match) || matchEndpoint(m, state.renderEndpoints);
+  const active = state.renderEndpoints.filter((e) => e.is_active !== false);
+  const matchedName = match.endpoint && match.endpoint.friendly_name ? match.endpoint.friendly_name : '';
+  const status = match.status === 'matched'
+    ? `自动匹配：${matchedName}（ContainerId）`
+    : match.status === 'matched_by_hint'
+      ? `名称匹配：${matchedName}（仅供参考）`
+      : match.status === 'ambiguous'
+        ? `未能唯一匹配（${(match.candidates || []).length} 个候选），请确认；确认前使用系统混合`
+        : '未能自动匹配；已预选系统混合';
+  const endpointId = sel && sel.endpointDeviceId ? sel.endpointDeviceId : '';
+  const options = [
+    `<option value="" ${endpointId ? '' : 'selected'}>不启用端点（使用系统混合）</option>`,
+    ...active.map((e) => `<option value="${esc(e.device_id)}" ${endpointId === e.device_id ? 'selected' : ''}>${esc(e.friendly_name)}${e.is_active ? '' : '（非活动）'}</option>`),
+  ].join('');
+  const apps = state.audioSources.map((a) =>
+    checkRow(`cfg-mon-${m.index}-app-${a.pid}`, `${esc(a.app_name)}`, !!sel && sel.apps.has(a.pid), false, `${esc(a.process_name)} · PID ${a.pid}${a.active ? '' : ' · 未在发声'}`)).join('');
+  return `
+    <div class="field monitor-audio" data-monitor-key="${esc(key)}" data-monitor-index="${m.index}">
+      <label>显示器 ${m.index + 1} · ${esc(m.friendly_name || m.name)} 音源</label>
+      <div class="hint" data-match-status>${esc(status)}</div>
+      ${loopbackOk ? `
+        ${checkRow(`cfg-mon-${m.index}-endpoint`, '该屏输出端点（自动匹配，可手选）', !!sel && sel.endpointSelected)}
+        <select id="cfg-mon-${m.index}-endpoint-select" style="margin:2px 0 8px;">${options}</select>` : `
+        <div class="notice warn">渲染端点不可用：该屏仅可使用系统/麦克风。</div>`}
+      ${checkRow(`cfg-mon-${m.index}-system`, '系统音频（整机混合）', !!sel && sel.systemSelected)}
+      ${checkRow(`cfg-mon-${m.index}-mic`, '麦克风（独立音轨）', !!sel && sel.micSelected, !micOk, micHint)}
+      <div class="field" style="margin-top:8px;">
+        <label>追加应用音源（启动时快照）</label>
+        ${apps || '<div class="empty">当前没有正在发声的应用</div>'}
+      </div>
+    </div>`;
 }
 
 // 纯录音左栏：音源多选
@@ -435,8 +571,37 @@ function buildAudioPlan(target) {
   const cfg = state.cfg;
   const loopbackOk = state.caps?.loopback_ok !== false;
   const isWindow = target?.hwnd !== undefined;
+  // M16/REQ-13：显示器目标逐屏独立选择；sources = 恰好所有已勾选条目，
+  // 顺序 [endpoint, system, mic, apps]；传输契约固定 mode=all_tracks。
+  if (!isWindow) {
+    const sel = state.monitorSel.get(monitorKey(target));
+    if (sel) {
+      const built = buildMonitorSources(
+        sel,
+        state.renderEndpoints,
+        state.settings?.mic_device,
+        (pid) => state.audioSources.find((x) => x.pid === pid),
+      );
+      return { mode: 'all_tracks', sources: built.sources, labels: built.labels };
+    }
+    // 兜底（理论上 reconcile 已建状态）：按匹配结果预选端点或系统混合。
+    const match = matchEndpoint(target, state.renderEndpoints);
+    const sources = [];
+    const labels = [];
+    if (match.status === 'matched' || match.status === 'matched_by_hint') {
+      sources.push({ kind: 'render_endpoint', device_id: match.endpoint.device_id });
+      labels.push(`端点 · ${match.endpoint.friendly_name}`);
+    } else {
+      sources.push({ kind: 'system' });
+      labels.push('系统音频');
+    }
+    if (cfg.srcMic && state.settings?.mic_device) {
+      sources.push({ kind: 'mic', device_id: state.settings.mic_device });
+      labels.push('麦克风');
+    }
+    return { mode: 'all_tracks', sources, labels };
+  }
   // 后端校验（E_INVALID_AUDIO_PLAN）：isolated 不得包含 system 音源（隔离=目标应用轨[+麦克风]）。
-  // 显示器/区域目标无天然应用 → 该路按 all_tracks 携带显式选择的音源（REQ-17）。
   const mode = (loopbackOk && cfg.audioMode === 'isolated' && isWindow) ? 'isolated' : 'all_tracks';
   const sources = [];
   const labels = [];
@@ -493,7 +658,7 @@ async function startRecording() {
       // 前端预检：任何一路音源为空都会被后端拒绝（批次全成功或回滚），提前拦截并说明
       const empty = routeCfgs.filter((c) => c.audio.sources.length === 0);
       if (empty.length) {
-        toast('warn', `${empty.map((c) => c._ui_label).join('、')} 没有任何音源：请勾选系统音频或麦克风（显示器目标无对应应用，音源需显式选择）`);
+        toast('warn', `${empty.map((c) => c._ui_label).join('、')} 没有任何音源：显示器目标请勾选该屏输出端点，或系统音频/麦克风（不静默录制）`);
         state.starting = false;
         renderStartBar();
         return;
@@ -537,33 +702,52 @@ async function startRecording() {
 }
 
 function registerRoute(id, meta) {
-  state.routes.set(id, {
-    id, ...meta,
-    state: 'starting',
-    startedAt: Date.now(),
-    error: null, progress: 0, path: null, paths: null,
-  });
-  // 应用先于注册到达的状态事件（后端可能在 start_routes 返回前已推送 recording）
+  const existing = state.routes.get(id);
+  if (existing) {
+    // REQ-12：重注册只补充展示元数据，不重置状态/起始时间/成品路径。
+    // 已有终态（done/failed）不得因启动回包/快照再次注册而降级。
+    Object.assign(existing, meta);
+  } else {
+    state.routes.set(id, {
+      id, ...meta,
+      state: 'starting',
+      startedAt: Date.now(),
+      error: null, progress: 0, path: null, paths: null,
+    });
+  }
+  // 应用先于注册到达的事件（后端可能在 start_routes 返回前已推送终态/recording）
   const pending = pendingStates.get(id);
   if (pending) {
     pendingStates.delete(id);
-    applyRouteState(state.routes.get(id), pending.state, pending.final_path);
+    applyPending(state.routes.get(id), pending);
   }
   renderRoutes();
 }
 
-// 后端状态机 recording → stopping → finalized | failed（M9-B §3.3）映射到卡片状态；
-// mock 另有 finalizing（带 progress）/ done，一并兼容。
-function applyRouteState(r, rawState, finalPath) {
-  if (!r) return;
-  const map = { finalized: 'done', failed: 'failed' };
-  r.state = map[rawState] || rawState;
-  if (finalPath) { r.path = finalPath; r.paths = [finalPath]; r.state = 'done'; }
-  if (['done', 'failed'].includes(r.state) && !r.finishedAt) r.finishedAt = Date.now();
-}
-
-// 早于注册到达的 route_state 暂存（真实后端下 subscribe 快照与启动回包存在时序竞争）
+// 早于注册到达的 route_state/route_error/route_finalized 暂存
+// （真实后端下 subscribe 快照与启动回包存在时序竞争；M16/REQ-12）。
 const pendingStates = new Map();
+
+function mergePending(id, patch) {
+  const prev = pendingStates.get(id) || {};
+  const incomingState = patch.state ? mapState(patch.state) : undefined;
+  let state = incomingState || prev.state;
+  // REQ-12：注册前缓存的事件同样受终态单调护栏约束——已缓存 done/failed 后，
+  // 迟到的更早状态不得覆盖；done（成品就绪）优先于 failed。
+  if (prev.state && isTerminal(prev.state)) {
+    if (!incomingState || !isTerminal(incomingState)) state = prev.state;
+    else state = prev.state === 'done' || incomingState === 'done' ? 'done' : 'failed';
+  }
+  pendingStates.set(id, {
+    ...prev,
+    ...patch,
+    state,
+    error: patch.error || prev.error,
+    paths: patch.paths || prev.paths,
+    final_path: patch.final_path || prev.final_path,
+    stop_notice: patch.stop_notice || prev.stop_notice,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // 录制视图 — 录制中卡片
@@ -639,6 +823,9 @@ function routeCard(r) {
     bodyHtml = (r.paths || [r.path]).filter(Boolean).map((p) => `<div class="route-path">${esc(p)}</div>`).join('');
   }
   const errHtml = r.error ? `<div class="route-err">${esc(r.error.code)}：${esc(r.error.message)}</div>` : '';
+  const noticeHtml = r.stopNotice
+    ? `<div class="route-err">${esc(r.stopNotice.code)}${r.stopNotice.endpoint ? `（${esc(r.stopNotice.endpoint)}）` : ''}：${esc(r.stopNotice.detail || '目标端点已失效；已保留已录制内容')}</div>`
+    : '';
 
   return `
     <div class="route-card ${cls}">
@@ -650,6 +837,7 @@ function routeCard(r) {
       ${timer}
       ${bodyHtml}
       ${errHtml}
+      ${noticeHtml}
       <div class="route-foot">
         <span class="spacer"></span>
         ${running ? `<button class="btn-sm btn-rec" data-stop="${r.id}">停止</button>` : ''}
@@ -679,12 +867,13 @@ subscribeEvents((evt) => {
     case '_snapshot': {
       // subscribe 返回的状态快照（REQ-31 UI 重绑）：重建仍在活动的路由卡片与恢复列表。
       // 快照不含目标名/音轨标签（RouteStateOut 仅 id/state/final_path），重建卡片以 id 为名。
+      // M16/REQ-12：迟到旧快照不得覆盖已收到的终态（mergeSnapshotRoute 终态护栏）。
       const snap = evt.snapshot || {};
       for (const rs of snap.routes || []) {
         if (!state.routes.has(rs.id)) {
           registerRoute(rs.id, { kind: 'video', label: rs.id, icon: ICONS.window, trackLabels: [] });
         }
-        applyRouteState(state.routes.get(rs.id), rs.state, rs.final_path);
+        mergeSnapshotRoute(state.routes.get(rs.id), rs);
       }
       if (Array.isArray(snap.recovery)) {
         state.recovery = snap.recovery;
@@ -695,8 +884,11 @@ subscribeEvents((evt) => {
     }
     case 'route_state': {
       const r = state.routes.get(evt.id);
-      if (!r) { pendingStates.set(evt.id, evt); return; }
-      applyRouteState(r, evt.state, evt.final_path);
+      if (!r) {
+        mergePending(evt.id, { state: evt.state, final_path: evt.final_path, stop_notice: evt.stop_notice });
+        return;
+      }
+      applyRouteState(r, evt.state, evt.final_path, evt.stop_notice);
       renderRoutes();
       break;
     }
@@ -711,21 +903,38 @@ subscribeEvents((evt) => {
     }
     case 'route_error': {
       const r = state.routes.get(evt.id);
-      if (!r) return;
-      r.error = { code: evt.code, message: evt.message };
+      if (!r) {
+        // 终态早于启动回包：先缓存（未知 route_id），注册后应用。
+        mergePending(evt.id, {
+          state: 'failed',
+          error: { code: evt.code, message: evt.message },
+          stop_notice: evt.stop_notice,
+        });
+        return;
+      }
       // route_error 为终态事件（M9-B §3.3）；后续若仍有 route_finalized（保留内容的
       // 优雅停止）则以 finalize 为准覆盖状态，错误框保留展示。
-      if (evt.severity === 'error' && ['starting', 'recording'].includes(r.state)) {
-        r.state = 'failed';
-        r.finishedAt = Date.now();
-      }
+      applyRouteError(r, evt.code, evt.message, evt.severity);
+      if (evt.stop_notice) r.stopNotice = evt.stop_notice;
       renderRoutes();
       toast(evt.severity === 'error' ? 'err' : 'warn', `${r.label}：${evt.message}`);
       break;
     }
     case 'route_finalized': {
       const r = state.routes.get(evt.id);
-      if (r) { r.path = evt.path; r.paths = evt.paths; r.state = 'done'; r.finishedAt = Date.now(); }
+      if (!r) {
+        mergePending(evt.id, {
+          state: 'finalized',
+          final_path: evt.path,
+          path: evt.path,
+          paths: evt.paths,
+          stop_notice: evt.stop_notice,
+        });
+        toast('ok', '录制已就绪', evt.path);
+        renderRoutes();
+        break;
+      }
+      applyRouteFinalized(r, evt.path, evt.paths, evt.stop_notice);
       toast('ok', `${r ? r.label : '录制'}已就绪`, evt.path);
       renderRoutes();
       break;

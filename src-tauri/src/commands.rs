@@ -37,7 +37,7 @@ use sr_enum::{audio_sessions, monitors};
 use sr_merge::merge::{MergeConfig, MergeError};
 use sr_pipeline::probe::{LayerStatus, ProbeCapabilities};
 use sr_pipeline::route::{
-    self, AudioOnlyConfig, AudioOnlyHandle, MultiRouteConfig, RouteError, RouteHandle,
+    self, AudioOnlyConfig, AudioOnlyHandle, MultiRouteConfig, RouteError, RouteHandle, StopNotice,
 };
 use sr_pipeline::{naming, probe, recovery};
 use sr_shot::screenshot::{self, ScreenRect, ScreenshotRequest, ShotError, ShotTarget};
@@ -105,6 +105,8 @@ pub enum AudioSourceIn {
     System,
     /// 麦克风（`device_id` = `list_audio_devices` 返回的 id，REQ-16）。
     Mic { device_id: String },
+    /// M16/REQ-11：显示器输出端点（`device_id` = `list_render_endpoints` 返回的 id）。
+    RenderEndpoint { device_id: String },
 }
 
 /// 音轨计划（REQ-17：隔离/全音轨；`sources` 为实际音轨清单，每条一条独立轨）。
@@ -173,16 +175,33 @@ pub struct TargetsOut {
 }
 
 /// 显示器条目（REQ-2：物理像素；`primary` 有且仅有一台）。
+/// M16/REQ-10：新增 friendly_name/device_path/container_id（元数据失败仅字段降级）。
 #[derive(Clone, Debug, Serialize)]
 pub struct MonitorOut {
     pub index: u32,
-    /// 显示名（sr-enum 未暴露设备友好名；以 `Monitor {index}` 稳定标识）。
+    /// 显示名（友好名缺失时回退 `Monitor {index}`；保持既有字段兼容）。
     pub name: String,
     pub width: u32,
     pub height: u32,
     pub x: i32,
     pub y: i32,
     pub primary: bool,
+    /// 显示器友好名（缺失 → 回退 `Monitor {index}`）。
+    pub friendly_name: String,
+    /// DisplayConfig monitorDevicePath（稳定键；缺失 → null）。
+    pub device_path: Option<String>,
+    /// PnP ContainerId（缺失/全零 → null）。
+    pub container_id: Option<String>,
+}
+
+/// 渲染端点（M16/REQ-9）。
+#[derive(Clone, Debug, Serialize)]
+pub struct RenderEndpointOut {
+    pub device_id: String,
+    pub friendly_name: String,
+    pub mix_rate: Option<u32>,
+    pub is_active: bool,
+    pub container_id: Option<String>,
 }
 
 /// 窗口条目（REQ-1：身份 = HWND + PID + 进程创建时间）。
@@ -344,7 +363,13 @@ pub struct DiscardSessionOut {
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventOut {
     /// 路由状态变化（recording/stopping/finalized/failed）。
-    RouteState { id: String, state: String },
+    RouteState {
+        id: String,
+        state: String,
+        /// M16/REQ-12：停止原因（无 → 省略）。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stop_notice: Option<StopNoticeOut>,
+    },
     /// 电平（≤10Hz，hub 节流）。当前管线无读数来源，见模块注释。
     RouteLevel { id: String, track: String, rms: f32 },
     /// 路级告警/错误（`severity` 目前恒为 error：发布时该路已终止）。
@@ -353,9 +378,18 @@ pub enum EventOut {
         code: String,
         message: String,
         severity: String,
+        /// M16/REQ-12：停止原因（无 → 省略）。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stop_notice: Option<StopNoticeOut>,
     },
     /// 成品就绪（停止后经事件通知，REQ-31）。
-    RouteFinalized { id: String, path: String },
+    RouteFinalized {
+        id: String,
+        path: String,
+        /// M16/REQ-12：停止原因（无 → 省略）。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stop_notice: Option<StopNoticeOut>,
+    },
     /// 崩溃残留被发现（UI 提示收尾/丢弃，REQ-22）。
     RecoveryFound { session: SessionOut },
 }
@@ -369,6 +403,14 @@ pub struct StateSnapshot {
     pub recovery: Vec<SessionOut>,
 }
 
+/// M16/REQ-12：路级停止原因（端点失效；成功/失败分支都进入快照与终态事件）。
+#[derive(Clone, Debug, Serialize)]
+pub struct StopNoticeOut {
+    pub code: String,
+    pub endpoint: Option<String>,
+    pub detail: String,
+}
+
 /// 快照内的单路状态。
 #[derive(Clone, Debug, Serialize)]
 pub struct RouteStateOut {
@@ -376,6 +418,9 @@ pub struct RouteStateOut {
     pub state: String,
     /// 终态（finalized）时的成品路径；其余为 null。
     pub final_path: Option<String>,
+    /// M16/REQ-12：停止原因（非端点失效 → 省略字段，保持既有 JSON 形状）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_notice: Option<StopNoticeOut>,
 }
 
 // ─────────────────────────── 运行时状态 ───────────────────────────
@@ -390,12 +435,17 @@ pub struct CommandsState {
     recoveries: Mutex<Vec<SessionOut>>,
     /// 最近一次成功启动的配置（托盘「开始」重放；无 → 明确提示未选择目标）。
     last_routes: Mutex<Option<Vec<RouteConfigIn>>>,
+    /// M16/REQ-12：快照生成与 Hub 提交串行化（A 取旧快照 / B 提交终态不得交错回退）。
+    snapshot_lock: Mutex<()>,
 }
 
 struct RouteSlot {
-    handle: Arc<ActiveRoute>,
+    /// 纯录音/视频路句柄；仅测试夹具可为 None（生产启动路径必为 Some）。
+    handle: Option<Arc<ActiveRoute>>,
     state: String,
     final_path: Option<String>,
+    /// M16/REQ-12：路级停止原因（端点失效）。
+    stop_notice: Option<StopNoticeOut>,
 }
 
 /// 活动路由句柄（视频路 / 纯录音会话）。
@@ -426,6 +476,14 @@ impl ActiveRoute {
             Self::AudioOnly(h) => h.wait_finalized(timeout).map(RouteOutcome::AudioOnly),
         }
     }
+
+    /// M16/REQ-12：失败分支的 stop_notice（成功分支由 Finalized 携带）。
+    fn stop_notice(&self) -> Option<StopNoticeOut> {
+        match self {
+            Self::Video(h) => h.stop_notice().as_ref().map(notice_out),
+            Self::AudioOnly(_) => None,
+        }
+    }
 }
 
 impl Default for CommandsState {
@@ -445,6 +503,7 @@ impl CommandsState {
             next_id: AtomicU64::new(1),
             recoveries: Mutex::new(Vec::new()),
             last_routes: Mutex::new(None),
+            snapshot_lock: Mutex::new(()),
         }
     }
 
@@ -485,9 +544,10 @@ impl CommandsState {
                 routes.insert(
                     id.clone(),
                     RouteSlot {
-                        handle: handle.clone(),
+                        handle: Some(handle.clone()),
                         state: STATE_RECORDING.to_string(),
                         final_path: None,
+                        stop_notice: None,
                     },
                 );
             }
@@ -497,13 +557,14 @@ impl CommandsState {
             self.hub.publish_alert(EventOut::RouteState {
                 id: id.clone(),
                 state: STATE_RECORDING.to_string(),
+                stop_notice: None,
             });
         }
         spawn_monitor(app.clone(), ids, handle);
     }
 
     /// 当前快照（路由表按 id 字典序 + 最近恢复扫描）。
-    fn snapshot(&self) -> StateSnapshot {
+    fn build_snapshot(&self) -> StateSnapshot {
         let routes = self
             .routes
             .lock()
@@ -513,18 +574,27 @@ impl CommandsState {
                 id: id.clone(),
                 state: slot.state.clone(),
                 final_path: slot.final_path.clone(),
+                stop_notice: slot.stop_notice.clone(),
             })
             .collect();
         let recovery = self.recoveries.lock().expect("恢复缓存锁").clone();
         StateSnapshot { routes, recovery }
     }
 
+    /// M16/REQ-12：快照生成与 Hub 提交在**同一锁内**完成；任何终态提交不会与
+    /// 旧快照的生成/提交交错（A 取旧快照 → B 提交终态 → A 回退缓存 不可能发生）。
     fn publish_snapshot(&self) {
-        self.hub.update_state(self.snapshot());
+        let _serial = self.snapshot_lock.lock().expect("快照串行锁");
+        self.hub.update_state(self.build_snapshot());
     }
 
     /// 收尾成功：更新终态 → 快照 → `route_finalized`（每 id 一条，顺序同 ids）。
+    /// M16/REQ-12：stop_notice（端点失效）进入快照与终态事件载荷。
     fn mark_finalized(&self, ids: &[String], outcome: &RouteOutcome) {
+        let notice = match outcome {
+            RouteOutcome::Video(fin) => fin.stop_notice.as_ref().map(notice_out),
+            RouteOutcome::AudioOnly(_) => None,
+        };
         let mut events = Vec::with_capacity(ids.len());
         {
             let mut routes = self.routes.lock().expect("路由表锁");
@@ -541,19 +611,23 @@ impl CommandsState {
                 if let Some(slot) = routes.get_mut(id) {
                     slot.state = STATE_FINALIZED.to_string();
                     slot.final_path = Some(path.clone());
+                    slot.stop_notice = notice.clone();
                 }
                 events.push((id.clone(), path));
             }
         }
         self.publish_snapshot();
         for (id, path) in events {
-            self.hub
-                .publish_alert(EventOut::RouteFinalized { id, path });
+            self.hub.publish_alert(EventOut::RouteFinalized {
+                id,
+                path,
+                stop_notice: notice.clone(),
+            });
         }
     }
 
     /// 路级失败：更新终态 → 快照 → `route_error`（每 id 一条）。
-    fn mark_failed(&self, ids: &[String], error: &RouteError) {
+    fn mark_failed(&self, ids: &[String], error: &RouteError, notice: Option<StopNoticeOut>) {
         let code = route_error_code(error).to_string();
         let message = route_error_message(error);
         {
@@ -561,6 +635,7 @@ impl CommandsState {
             for id in ids {
                 if let Some(slot) = routes.get_mut(id) {
                     slot.state = STATE_FAILED.to_string();
+                    slot.stop_notice = notice.clone();
                 }
             }
         }
@@ -571,6 +646,7 @@ impl CommandsState {
                 code: code.clone(),
                 message: message.clone(),
                 severity: SEVERITY_ERROR.to_string(),
+                stop_notice: notice.clone(),
             });
         }
     }
@@ -588,6 +664,15 @@ impl CommandsState {
             .expect("恢复缓存锁")
             .retain(|s| s.session_id != session_id);
         self.publish_snapshot();
+    }
+}
+
+/// M16/REQ-12：管线 StopNotice → JSON 投影。
+fn notice_out(notice: &StopNotice) -> StopNoticeOut {
+    StopNoticeOut {
+        code: notice.code.clone(),
+        endpoint: notice.endpoint.clone(),
+        detail: notice.detail.clone(),
     }
 }
 
@@ -612,7 +697,8 @@ fn spawn_monitor(app: AppHandle, ids: Vec<String>, handle: Arc<ActiveRoute>) {
                     let Some(state) = app.try_state::<CommandsState>() else {
                         return;
                     };
-                    state.mark_failed(&thread_ids, &error);
+                    // M16/REQ-12：失败分支仍携带 stop_notice（端点失效 → E_TARGET_LOST）。
+                    state.mark_failed(&thread_ids, &error, handle.stop_notice());
                     return;
                 }
             }
@@ -642,14 +728,23 @@ pub async fn list_targets() -> Result<TargetsOut, String> {
         Ok(TargetsOut {
             monitors: monitors
                 .into_iter()
-                .map(|m| MonitorOut {
-                    index: m.index,
-                    name: format!("Monitor {}", m.index),
-                    width: m.width_px,
-                    height: m.height_px,
-                    x: m.x,
-                    y: m.y,
-                    primary: m.is_primary,
+                .map(|m| {
+                    let name = m
+                        .friendly_name
+                        .clone()
+                        .unwrap_or_else(|| format!("Monitor {}", m.index));
+                    MonitorOut {
+                        index: m.index,
+                        name: name.clone(),
+                        width: m.width_px,
+                        height: m.height_px,
+                        x: m.x,
+                        y: m.y,
+                        primary: m.is_primary,
+                        friendly_name: name,
+                        device_path: m.device_path,
+                        container_id: m.container_id,
+                    }
                 })
                 .collect(),
             windows: windows
@@ -705,6 +800,33 @@ pub async fn list_audio_devices() -> Result<Vec<AudioDeviceOut>, String> {
             .collect())
     })
     .await
+}
+
+/// M16/REQ-9：`list_render_endpoints() -> Vec<{device_id,friendly_name,mix_rate,is_active,container_id}>`。
+///
+/// 枚举失败返回空列表 + 日志（不阻断 UI/录制）；MTA 线程在 `sr-enum` 内执行。
+#[tauri::command]
+pub async fn list_render_endpoints() -> Vec<RenderEndpointOut> {
+    tauri::async_runtime::spawn_blocking(
+        || match sr_enum::render_endpoints::list_render_endpoints() {
+            Ok(list) => list
+                .into_iter()
+                .map(|e| RenderEndpointOut {
+                    device_id: e.device_id,
+                    friendly_name: e.friendly_name,
+                    mix_rate: e.mix_rate,
+                    is_active: e.is_active,
+                    container_id: e.container_id,
+                })
+                .collect(),
+            Err(e) => {
+                eprintln!("[commands] 渲染端点枚举失败（返回空列表）：{e}");
+                Vec::new()
+            }
+        },
+    )
+    .await
+    .unwrap_or_default()
 }
 
 /// M15/REQ-2：`get_endpoint_mix_rate(device_id?) -> Option<{rate,kind,device_name}>`。
@@ -819,10 +941,17 @@ pub fn stop_route(app: AppHandle, route_id: String) -> Result<StopRouteOut, Stri
                 requested: false,
             });
         }
-        let handle = slot.handle.clone();
+        let handle = slot
+            .handle
+            .clone()
+            .ok_or_else(|| invalid("E_ROUTE_NOT_FOUND", format!("未知路由句柄：{route_id}")))?;
         for (id, slot) in routes.iter_mut() {
             // 已在停止中的路由不重复发状态事件（request_stop 幂等，重复调用无副作用）。
-            if Arc::ptr_eq(&slot.handle, &handle)
+            if slot
+                .handle
+                .as_ref()
+                .map(|h| Arc::ptr_eq(h, &handle))
+                .unwrap_or(false)
                 && !is_terminal(&slot.state)
                 && slot.state != STATE_STOPPING
             {
@@ -838,6 +967,7 @@ pub fn stop_route(app: AppHandle, route_id: String) -> Result<StopRouteOut, Stri
         state.hub.publish_alert(EventOut::RouteState {
             id: id.clone(),
             state: STATE_STOPPING.to_string(),
+            stop_notice: None,
         });
     }
     Ok(StopRouteOut {
@@ -863,7 +993,9 @@ pub(crate) fn stop_all_impl(app: &AppHandle) -> Result<StopAllOut, String> {
                 continue;
             }
             slot.state = STATE_STOPPING.to_string();
-            slot.handle.request_stop();
+            if let Some(handle) = &slot.handle {
+                handle.request_stop();
+            }
             requested.push(id.clone());
         }
     }
@@ -872,6 +1004,7 @@ pub(crate) fn stop_all_impl(app: &AppHandle) -> Result<StopAllOut, String> {
         state.hub.publish_alert(EventOut::RouteState {
             id: id.clone(),
             state: STATE_STOPPING.to_string(),
+            stop_notice: None,
         });
     }
     Ok(StopAllOut { requested })
@@ -1159,6 +1292,26 @@ fn to_multi_route(cfg: RouteConfigIn) -> Result<MultiRouteConfig, String> {
             "isolated 模式不得包含 system 音源（REQ-17：隔离=目标应用轨[+麦克风]；需要系统轨请用 all_tracks）",
         ));
     }
+    // M16/REQ-13：端点音源仅适用于显示器目标；窗口/区域 + 端点 → 拒绝。
+    if !matches!(cfg.target, TargetIn::Monitor { .. })
+        && cfg
+            .audio
+            .sources
+            .iter()
+            .any(|s| matches!(s, AudioSourceIn::RenderEndpoint { .. }))
+    {
+        return Err(invalid(
+            "E_INVALID_AUDIO_PLAN",
+            "render_endpoint 音源仅适用于显示器目标（REQ-13：窗口目标隔离限制不变）",
+        ));
+    }
+    // M16/REQ-14：显示器目标零音源 → 启动被拒 + 端点选项引导。
+    if matches!(cfg.target, TargetIn::Monitor { .. }) && cfg.audio.sources.is_empty() {
+        return Err(invalid(
+            "E_INVALID_AUDIO_PLAN",
+            "显示器目标没有任何音源：请勾选该屏输出端点、系统音频或麦克风（不静默录制；REQ-14）",
+        ));
+    }
     Ok(MultiRouteConfig {
         target: route_target(&cfg.target)?,
         video: route::VideoCfg {
@@ -1180,6 +1333,15 @@ fn plan_audio_only(sources: Vec<AudioSourceIn>) -> Result<Vec<AudioSourceSpec>, 
             "start_audio_only 至少需要 1 个音源",
         ));
     }
+    if sources
+        .iter()
+        .any(|s| matches!(s, AudioSourceIn::RenderEndpoint { .. }))
+    {
+        return Err(invalid(
+            "E_INVALID_AUDIO_PLAN",
+            "纯录音不接受 render_endpoint 音源（REQ-13：端点音源仅适用于显示器目标）",
+        ));
+    }
     Ok(sources.iter().map(audio_source).collect())
 }
 
@@ -1195,6 +1357,9 @@ fn audio_source(src: &AudioSourceIn) -> AudioSourceSpec {
         AudioSourceIn::System => AudioSourceSpec::System,
         AudioSourceIn::Mic { device_id } => AudioSourceSpec::Mic {
             device: device_id.clone(),
+        },
+        AudioSourceIn::RenderEndpoint { device_id } => AudioSourceSpec::RenderEndpoint {
+            device_id: device_id.clone(),
         },
     }
 }
@@ -1554,6 +1719,32 @@ mod tests {
     }
 
     #[test]
+    fn route_config_in_parses_render_endpoint_json() {
+        let json = r#"{
+            "target": { "kind": "monitor", "index": 0 },
+            "video": { "canvas_w": 1280, "canvas_h": 720, "fps": 30 },
+            "audio": {
+                "mode": "all_tracks",
+                "sources": [
+                    { "kind": "render_endpoint", "device_id": "ep-display" },
+                    { "kind": "system" }
+                ]
+            },
+            "output_dir": "C:\\out"
+        }"#;
+        let cfg: RouteConfigIn = serde_json::from_str(json).expect("render_endpoint JSON 可解析");
+        let planned = plan_routes(vec![cfg]).expect("显示器 + 端点计划应合法");
+        assert_eq!(
+            planned[0].audio[0],
+            AudioSourceSpec::RenderEndpoint {
+                device_id: "ep-display".into()
+            },
+            "REQ-11：JSON kind=render_endpoint → AudioSourceSpec::RenderEndpoint"
+        );
+        assert_eq!(planned[0].audio.len(), 2);
+    }
+
+    #[test]
     fn invalid_plans_are_rejected_with_codes() {
         let base = RouteConfigIn {
             target: TargetIn::Monitor { index: 0 },
@@ -1596,6 +1787,7 @@ mod tests {
         let state = EventOut::RouteState {
             id: "route-1".to_string(),
             state: "recording".to_string(),
+            stop_notice: None,
         };
         assert_eq!(
             serde_json::to_value(&state).expect("serialize"),
@@ -1617,6 +1809,7 @@ mod tests {
             code: "E_TARGET_LOST".to_string(),
             message: "窗口已关闭".to_string(),
             severity: "error".to_string(),
+            stop_notice: None,
         };
         assert_eq!(
             serde_json::to_value(&error).expect("serialize"),
@@ -1632,6 +1825,7 @@ mod tests {
         let finalized = EventOut::RouteFinalized {
             id: "route-3".to_string(),
             path: "C:\\out\\a.mkv".to_string(),
+            stop_notice: None,
         };
         assert_eq!(
             serde_json::to_value(&finalized).expect("serialize"),
@@ -1684,6 +1878,7 @@ mod tests {
                 id: "route-1".to_string(),
                 state: "finalized".to_string(),
                 final_path: Some("C:\\out\\x.mkv".to_string()),
+                stop_notice: None,
             }],
             recovery: Vec::new(),
         };
@@ -1702,6 +1897,7 @@ mod tests {
                 id: "route-0".to_string(),
                 state: STATE_RECORDING.to_string(),
                 final_path: None,
+                stop_notice: None,
             }],
             recovery: Vec::new(),
         });
@@ -1730,6 +1926,7 @@ mod tests {
         hub.publish_alert(EventOut::RouteState {
             id: "route-1".to_string(),
             state: STATE_RECORDING.to_string(),
+            stop_notice: None,
         });
 
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -1746,5 +1943,211 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    // ── M16/REQ-11/13：音源校验与端点拒绝矩阵 ──
+
+    fn base_route(target: TargetIn, mode: AudioMode, sources: Vec<AudioSourceIn>) -> RouteConfigIn {
+        RouteConfigIn {
+            target,
+            video: VideoCfgIn {
+                canvas_w: 640,
+                canvas_h: 360,
+                fps: 30,
+                cursor: false,
+            },
+            audio: AudioPlanIn { mode, sources },
+            output_dir: "C:\\out".to_string(),
+        }
+    }
+
+    #[test]
+    fn unit_commands_audio_source_validation_render_endpoint() {
+        let endpoint = AudioSourceIn::RenderEndpoint {
+            device_id: "ep-display".to_string(),
+        };
+        // 显示器 + endpoint：接受并映射为 RenderEndpoint 音源（实际勾选）。
+        let planned = plan_routes(vec![base_route(
+            TargetIn::Monitor { index: 0 },
+            AudioMode::AllTracks,
+            vec![endpoint.clone()],
+        )])
+        .expect("显示器 + 端点应被接受");
+        assert_eq!(
+            planned[0].audio,
+            vec![AudioSourceSpec::RenderEndpoint {
+                device_id: "ep-display".into()
+            }]
+        );
+
+        // 窗口目标 + endpoint：拒绝（REQ-13：窗口目标的隔离限制不变）。
+        let err = plan_routes(vec![base_route(
+            TargetIn::Window { hwnd: 42 },
+            AudioMode::AllTracks,
+            vec![endpoint.clone()],
+        )])
+        .expect_err("窗口 + 端点必须拒绝");
+        assert!(err.contains("E_INVALID_AUDIO_PLAN"), "得到 {err}");
+
+        // 纯录音 + endpoint：拒绝（REQ-13）。
+        let err = plan_audio_only(vec![endpoint]).expect_err("纯录音不接受端点音源");
+        assert!(err.contains("E_INVALID_AUDIO_PLAN"), "得到 {err}");
+
+        // 显示器零音源：拒绝 + 端点选项引导（REQ-14）。
+        let err = plan_routes(vec![base_route(
+            TargetIn::Monitor { index: 0 },
+            AudioMode::AllTracks,
+            Vec::new(),
+        )])
+        .expect_err("显示器零音源必须拒绝");
+        assert!(err.contains("E_INVALID_AUDIO_PLAN"), "得到 {err}");
+        assert!(
+            err.contains("端点") && err.contains("系统"),
+            "提示应包含端点/系统音源选项引导（得到 {err}）"
+        );
+
+        // 命令层保留 endpoint + system 两条（去重发生在管线启动、按实际 ID）。
+        let planned = plan_routes(vec![base_route(
+            TargetIn::Monitor { index: 0 },
+            AudioMode::AllTracks,
+            vec![
+                AudioSourceIn::RenderEndpoint {
+                    device_id: "ep-display".into(),
+                },
+                AudioSourceIn::System,
+            ],
+        )])
+        .expect("端点 + 系统应被接受");
+        assert_eq!(
+            planned[0].audio.len(),
+            2,
+            "REQ-13：去重时机在管线启动（按实际 device_id），命令层不得提前丢弃"
+        );
+    }
+
+    #[test]
+    fn unit_commands_isolated_system_still_rejected() {
+        let err = plan_routes(vec![base_route(
+            TargetIn::Window { hwnd: 42 },
+            AudioMode::Isolated,
+            vec![AudioSourceIn::System],
+        )])
+        .expect_err("isolated + system 拒绝行为不变");
+        assert!(err.contains("E_INVALID_AUDIO_PLAN"), "得到 {err}");
+    }
+
+    // ── M16/REQ-12：快照/终态串行化与 stop_notice 载荷 ──
+
+    fn video_finalized(path: &str, notice: Option<StopNotice>) -> RouteOutcome {
+        RouteOutcome::Video(route::Finalized {
+            final_path: PathBuf::from(path),
+            segment_list: PathBuf::from("C:\\out\\segments.ffconcat"),
+            segments: Vec::new(),
+            stop_notice: notice,
+        })
+    }
+
+    fn insert_recording(state: &CommandsState, id: &str) {
+        state.routes.lock().expect("路由表锁").insert(
+            id.to_string(),
+            RouteSlot {
+                handle: None,
+                state: STATE_RECORDING.to_string(),
+                final_path: None,
+                stop_notice: None,
+            },
+        );
+    }
+
+    #[test]
+    fn unit_commands_terminal_snapshot_and_event_carry_stop_notice() {
+        let state = CommandsState::new();
+        insert_recording(&state, "route-1");
+        state.publish_snapshot();
+        let sub = state.hub.subscribe();
+
+        let notice = StopNotice {
+            code: "E_TARGET_LOST".to_string(),
+            endpoint: Some("DELL U2720Q".to_string()),
+            detail: "设备已移除".to_string(),
+        };
+        state.mark_finalized(
+            &["route-1".to_string()],
+            &video_finalized("C:\\out\\a.mkv", Some(notice.clone())),
+        );
+
+        let snapshot = state.hub.subscribe().snapshot;
+        let route = snapshot
+            .routes
+            .iter()
+            .find(|r| r.id == "route-1")
+            .expect("快照应含 route-1");
+        assert_eq!(route.state, STATE_FINALIZED);
+        assert_eq!(
+            route.stop_notice.as_ref().map(|n| n.code.as_str()),
+            Some("E_TARGET_LOST"),
+            "REQ-12：stop_notice 必须进入快照（成功收尾分支）"
+        );
+        assert_eq!(
+            route
+                .stop_notice
+                .as_ref()
+                .and_then(|n| n.endpoint.as_deref()),
+            Some("DELL U2720Q")
+        );
+        match sub
+            .alerts
+            .recv_timeout(Duration::from_secs(1))
+            .expect("应收到终态事件")
+        {
+            EventOut::RouteFinalized {
+                id, stop_notice, ..
+            } => {
+                assert_eq!(id, "route-1");
+                assert_eq!(
+                    stop_notice.as_ref().map(|n| n.code.as_str()),
+                    Some("E_TARGET_LOST"),
+                    "REQ-12：终态事件载荷应携带 stop_notice"
+                );
+            }
+            other => panic!("应 route_finalized（得到 {other:?}）"),
+        }
+    }
+
+    #[test]
+    fn unit_commands_snapshot_commit_is_serialized_with_terminal_transition() {
+        let state = Arc::new(CommandsState::new());
+        insert_recording(&state, "route-1");
+        state.publish_snapshot();
+
+        // A：取得快照生成权（旧快照），尚未提交。
+        let guard = state.snapshot_lock.lock().expect("快照串行锁");
+        let stale = state.build_snapshot();
+        assert_eq!(stale.routes[0].state, STATE_RECORDING);
+
+        // B：终态提交必须等待 A 完成（同一锁内完成快照生成 + Hub 提交）。
+        let (tx, rx) = std::sync::mpsc::channel();
+        let state_b = state.clone();
+        let worker = std::thread::spawn(move || {
+            state_b.mark_finalized(
+                &["route-1".to_string()],
+                &video_finalized("C:\\out\\b.mkv", None),
+            );
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_millis(150)).is_err(),
+            "REQ-12：A 持有快照生成权时，B 的终态提交不得交错完成"
+        );
+
+        drop(guard); // A 放弃旧快照（不得再提交）
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("B 应在 A 释放后完成终态提交");
+        worker.join().expect("B 线程");
+        assert_eq!(
+            state.hub.subscribe().snapshot.routes[0].state,
+            STATE_FINALIZED,
+            "REQ-12：旧快照不得回退缓存；新订阅必须取得终态"
+        );
     }
 }

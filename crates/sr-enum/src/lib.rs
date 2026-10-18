@@ -10,4 +10,5 @@
 pub mod audio_sessions;
 pub mod identity;
 pub mod monitors;
+pub mod render_endpoints;
 pub mod windows;

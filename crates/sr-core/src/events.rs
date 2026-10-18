@@ -119,8 +119,16 @@ where
     }
 
     /// 订阅入口：返回**当前**状态快照 + 告警/电平两条独立接收端（REQ-31）。
+    ///
+    /// M16/REQ-12：**先注册接收端，再读快照**——注册窗口内发布的终态事件不会丢失
+    /// （快照可能仍旧，但事件已排队；客户端应用终态护栏）。
     pub fn subscribe(&self) -> Subscription<S, A, L> {
-        let snapshot = self.inner.state.lock().expect("state lock").clone();
+        self.subscribe_inner(|| {})
+    }
+
+    /// 先注册接收端，再执行 hook（测试注入交错点），最后读快照。
+    /// 生产 `subscribe` 传入空 hook；注册窗口内发布的终态事件已排队，不会丢失。
+    fn subscribe_inner<F: FnOnce()>(&self, after_register: F) -> Subscription<S, A, L> {
         let (alert_tx, alert_rx) = mpsc::channel();
         let (level_tx, level_rx) = mpsc::channel();
         let alert_live = Arc::new(AtomicBool::new(true));
@@ -131,12 +139,17 @@ where
             throttle: LevelThrottle::new(LEVEL_MIN_INTERVAL),
             pending: None,
         };
-        let mut subs = self.inner.subs.lock().expect("subs lock");
-        subs.alerts.push(AlertEntry {
-            tx: alert_tx,
-            live: Arc::clone(&alert_live),
-        });
-        subs.levels.push(gate);
+        {
+            let mut subs = self.inner.subs.lock().expect("subs lock");
+            subs.alerts.push(AlertEntry {
+                tx: alert_tx,
+                live: Arc::clone(&alert_live),
+            });
+            subs.levels.push(gate);
+        }
+        // 注册已完成（释放 subs 锁，允许发布交错）；再读快照。
+        after_register();
+        let snapshot = self.inner.state.lock().expect("state lock").clone();
         Subscription {
             snapshot,
             alerts: Receiver {
@@ -152,24 +165,17 @@ where
 
     /// 发布告警/状态事件（REQ-31）。
     ///
-    /// 投递语义为**事务式**：当存在已失效的接收端（UI 重载遗留的旧订阅）时，
-    /// 本次事件整体丢弃，仅回收失效订阅；存活订阅端以「订阅即快照」恢复状态视图。
-    /// 因此每次 UI 重绑至多丢失一条在途事件，发布方永不阻塞、不感知失败（返回 ()）。
+    /// M16/REQ-12：**逐订阅清理**——死订阅只移除自身，绝不因单个死订阅丢弃对活
+    /// 订阅的投递；发布方永不阻塞、不感知失败（返回 ()）。
     pub fn publish_alert(&self, alert: A) {
         let mut subs = self.inner.subs.lock().expect("subs lock");
-        if subs
-            .alerts
-            .iter()
-            .any(|entry| !entry.live.load(Ordering::Acquire))
-        {
-            subs.alerts
-                .retain(|entry| entry.live.load(Ordering::Acquire));
-            return;
-        }
-        for entry in &subs.alerts {
-            // 已预检存活；竞态下仍可能失败，容忍之（REQ-31：发送失败不得中断录制）。
-            let _ = entry.tx.send(alert.clone());
-        }
+        subs.alerts.retain_mut(|entry| {
+            if !entry.live.load(Ordering::Acquire) {
+                return false;
+            }
+            // 竞态下发送仍可能失败：容忍并移除该订阅（REQ-31：发送失败不得中断录制）。
+            entry.tx.send(alert.clone()).is_ok()
+        });
     }
 
     /// 发布电平事件（≤10Hz/订阅，REQ-31）。
@@ -286,5 +292,26 @@ impl LevelThrottle {
     /// 上次发射时刻（flush 线程计算下次送达时刻用）。
     pub fn last_emit(&self) -> Option<Instant> {
         self.last_emit
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M16/REQ-12：订阅与终态发布交错——先注册接收端再读快照；注册窗口内发布的
+    /// 终态告警必须已排队（即使快照仍是旧值）。
+    #[test]
+    fn unit_channel_subscribe_registers_before_snapshot_read() {
+        let hub = ChannelHub::<u32, u32, u32>::new(0);
+        let sub = hub.subscribe_inner(|| {
+            hub.publish_alert(42); // 终态发布恰在注册后、快照读取前
+        });
+        assert_eq!(sub.snapshot, 0, "快照读取顺序不影响事件排队");
+        assert_eq!(
+            sub.alerts.recv_timeout(Duration::from_secs(1)),
+            Ok(42),
+            "注册窗口内的终态告警不得丢失"
+        );
     }
 }

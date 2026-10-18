@@ -21,6 +21,7 @@
 //   ?scenario=error      录制 6s 后首路注入 E_TARGET_LOST
 //   ?scenario=empty      空窗口 / 空音源（演示空态）
 //   ?scenario=norecovery 不返回崩溃残留会话
+//   ?endpoints=ambiguous 端点匹配歧义（候选 a/b + 无关首项，供 REQ-10 回归）
 // ============================================================================
 (() => {
 'use strict';
@@ -107,6 +108,8 @@ function makeReal() {
   return {
     probeCapabilities: () => invoke('probe_capabilities').then(normalizeProbe),
     listTargets: () => invoke('list_targets'),
+    // M16/REQ-9：渲染端点枚举（device_id/friendly_name/mix_rate/is_active/container_id）。
+    listRenderEndpoints: () => invoke('list_render_endpoints'),
     listAudioSources: () => invoke('list_audio_sources'),
     listAudioDevices: () => invoke('list_audio_devices'),
     // M15/REQ-2：端点原生混音率（独立于 probe_capabilities；失败返回 null）。
@@ -182,10 +185,41 @@ function makeMock() {
     } : null,
   };
 
-  const monitors = [
-    { index: 0, name: 'DELL U2720Q', width: 3840, height: 2160, x: 0, y: 0, primary: true },
-    { index: 1, name: 'HKC MG27Q', width: 2560, height: 1440, x: 3840, y: 120, primary: false },
+  // M16/REQ-10：mock 显示器元数据（device_path 为稳定键；运行器可切换无元数据/换序场景）。
+  const DEL_DP = '\\\\?\\DISPLAY#DELA1B2#5&abc&0&UID4357#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}';
+  const HKC_DP = '\\\\?\\DISPLAY#HKC1234#5&def&0&UID4352#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}';
+  const DEL_CID = '11111111-2222-3333-4444-555555555555';
+  const HKC_CID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const monitorsAll = params.get('monitors_nometa') === '1'
+    ? [
+        { index: 0, name: 'Monitor 0', friendly_name: null, device_path: null, container_id: null, width: 3840, height: 2160, x: 0, y: 0, primary: true },
+        { index: 1, name: 'Monitor 1', friendly_name: null, device_path: null, container_id: null, width: 2560, height: 1440, x: 3840, y: 120, primary: false },
+      ]
+    : [
+        { index: 0, name: 'DELL U2720Q', friendly_name: 'DELL U2720Q', device_path: DEL_DP, container_id: DEL_CID, width: 3840, height: 2160, x: 0, y: 0, primary: true },
+        { index: 1, name: 'HKC MG27Q', friendly_name: 'HKC MG27Q', device_path: HKC_DP, container_id: HKC_CID, width: 2560, height: 1440, x: 3840, y: 120, primary: false },
+      ];
+  let monitors = monitorsAll.map((m) => ({ ...m }));
+  let targetCalls = 0;
+
+  // M16/REQ-9：mock 渲染端点（默认两屏各自命中 ContainerId；可切换空/无元数据）。
+  const endpointScenario = params.get('endpoints') || '';
+  const renderEndpointsAll = endpointScenario === 'none' ? [] : [
+    { device_id: 'ep-dell', friendly_name: 'DELL U2720Q (NVIDIA High Definition Audio)', mix_rate: 48000, is_active: true, container_id: DEL_CID },
+    { device_id: 'ep-hkc', friendly_name: 'HKC MG27Q (NVIDIA High Definition Audio)', mix_rate: 48000, is_active: true, container_id: HKC_CID },
+    { device_id: 'ep-usb', friendly_name: 'USB Audio Device', mix_rate: 44100, is_active: true, container_id: null },
   ];
+  // REQ-10⑤ 回归夹具：候选 a/b（同 ContainerId、同分）+ 枚举首项无关端点。
+  const ambiguousEndpoints = [
+    { device_id: 'ep-unrelated', friendly_name: 'USB Audio Device', mix_rate: 44100, is_active: true, container_id: null },
+    { device_id: 'ep-candidate-a', friendly_name: 'DELL U2720Q (候选 A)', mix_rate: 48000, is_active: true, container_id: DEL_CID },
+    { device_id: 'ep-candidate-b', friendly_name: 'DELL U2720Q (候选 B)', mix_rate: 48000, is_active: true, container_id: DEL_CID },
+  ];
+  const renderEndpoints = endpointScenario === 'nocontainer'
+    ? renderEndpointsAll.map((e) => ({ ...e, container_id: null, friendly_name: e.friendly_name.replace(/^.*? \(/, 'Audio ') }))
+    : endpointScenario === 'ambiguous'
+      ? ambiguousEndpoints
+      : renderEndpointsAll;
 
   const windowsAll = [
     { hwnd: 0x30A12, title: '哔哩哔哩 (゜-゜)つロ 干杯~ - Google Chrome', app_name: 'Google Chrome', process_name: 'chrome.exe', pid: 15240, created_at_unix_ms: now - 3600_000 },
@@ -319,7 +353,20 @@ function makeMock() {
 
   return {
     async probeCapabilities() { await wait(250); return structuredClone(caps); },
-    async listTargets() { await wait(600); return structuredClone({ monitors, windows }); },
+    async listTargets() {
+      await wait(600);
+      targetCalls++;
+      if (params.get('monitors_swap_on_refresh') === '1' && targetCalls > 1) {
+        // index 交换：device_path/friendly_name 跟随物理屏，index 变化。
+        monitors = monitorsAll
+          .map((m) => ({ ...m, index: m.index === 0 ? 1 : m.index === 1 ? 0 : m.index }))
+          .sort((a, b) => a.index - b.index);
+      } else {
+        monitors = monitorsAll.map((m) => ({ ...m }));
+      }
+      return structuredClone({ monitors, windows });
+    },
+    async listRenderEndpoints() { await wait(150); return structuredClone(renderEndpoints); },
     async listAudioSources() { await wait(400); return structuredClone(audioSources); },
     async listAudioDevices() { await wait(200); return structuredClone(audioDevices); },
 
@@ -352,6 +399,20 @@ function makeMock() {
         });
         return id;
       });
+      if (scenario === 'early_terminal' && route_ids.length) {
+        // M16/REQ-12 UI 场景：终态早于 start_routes 回包 → app.js 必须先缓存再应用。
+        const id = route_ids[0];
+        const entry = routes.get(id);
+        const path = entry
+          ? `${entry.outDir}\\${stamp()}_${sanitize(entry.label)}.mkv`
+          : `${settings.output_dir}\\${stamp()}_early.mkv`;
+        if (entry) {
+          entry.finalized = true;
+          clearInterval(entry.levelTimer);
+          routes.delete(id);
+        }
+        emit({ event: 'route_finalized', id, path, paths: [path] });
+      }
       return { route_ids };
     },
 

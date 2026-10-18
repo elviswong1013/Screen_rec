@@ -61,7 +61,8 @@ fn unit_channel_snapshot_rebind() {
         "重绑订阅必须取得最新状态快照（而非初始状态）——UI 重载后能恢复当前录制视图"
     );
 
-    // ── 2. 旧订阅发送失败不得中断录制（REQ-31 失败容忍语义）──
+    // ── 2. 旧订阅失效不得丢失对活订阅的投递（REQ-31 失败容忍语义；M16/REQ-12
+    //      迁移：活订阅收到首条及后续告警；原「死订阅存在 ⇒ 丢弃首条」契约作废）──
     // 模拟 UI 重载：旧订阅的两个接收端全部失效。
     drop(sub1.alerts);
     drop(sub1.levels);
@@ -69,12 +70,18 @@ fn unit_channel_snapshot_rebind() {
     // （以类型断言钉死 publish* 返回 ()：发送失败只允许在内部被吞掉。）
     let (): () = hub.publish_alert(FakeAlert { code: 1 });
     let (): () = hub.publish_level(FakeLevel { rms: 0.5 });
+    // M16/REQ-12：publish_alert 必须逐订阅清理——死订阅不得导致活订阅丢首条。
+    assert_eq!(
+        sub2.alerts.recv_timeout(Duration::from_secs(1)),
+        Ok(FakeAlert { code: 1 }),
+        "旧订阅失效时，活订阅必须收到首条告警（不再整条丢弃）"
+    );
     // 「不中断」的可观察证据：新订阅继续收到后续事件。
     hub.publish_alert(FakeAlert { code: 2 });
     assert_eq!(
         sub2.alerts.recv_timeout(Duration::from_secs(1)),
         Ok(FakeAlert { code: 2 }),
-        "旧订阅失效后，新订阅必须继续收到事件（录制不中断）"
+        "旧订阅失效后，新订阅必须继续收到后续事件（录制不中断）"
     );
 
     // ── 3. 告警与电平分通道（REQ-31/REQ-27：告警不受电平事件流饿死）──
@@ -128,5 +135,30 @@ fn unit_channel_snapshot_rebind() {
     assert!(
         received <= 10,
         "电平流必须节流至 ≤10Hz（REQ-31）：250ms 窗口收到 {received} 条（未节流应为 50）"
+    );
+}
+
+/// M16/REQ-12：终态更新后——
+/// - 早先订阅（旧快照）仍必须收到终态事件（不因注册窗口/快照旧值丢失）；
+/// - 新订阅必须取得终态快照（重订阅恢复）。
+#[test]
+fn unit_channel_terminal_after_old_snapshot_reaches_old_and_new_subscribers() {
+    let hub = ChannelHub::<FakeState, FakeAlert, FakeLevel>::new(FakeState { revision: 0 });
+    let old = hub.subscribe();
+    assert_eq!(old.snapshot, FakeState { revision: 0 });
+
+    hub.update_state(FakeState { revision: 9 }); // 终态
+    hub.publish_alert(FakeAlert { code: 9 });
+
+    assert_eq!(
+        old.alerts.recv_timeout(Duration::from_secs(1)),
+        Ok(FakeAlert { code: 9 }),
+        "旧快照订阅必须收到终态事件（注册窗口内终态不得丢失）"
+    );
+    let new = hub.subscribe();
+    assert_eq!(
+        new.snapshot,
+        FakeState { revision: 9 },
+        "终态提交后的新订阅必须取得终态快照"
     );
 }

@@ -67,6 +67,17 @@ impl SampleSlotPacer {
         }
     }
 
+    /// 无包端点续流锚点：在采集启动时建立 T0（仅当尚未建立）。
+    ///
+    /// M16/REQ-12：显式渲染端点可能长时间无客户端/无包（静音），首包永不 Establishment
+    /// 会让墙钟续流无法工作；此锚点让采集核从启动时刻起按墙钟补静音（不判失效）。
+    pub fn start_at(&mut self, ts_100ns: i64) {
+        if self.t0.is_none() {
+            self.t0 = Some(ts_100ns);
+            self.last_packet_end_100ns = Some(ts_100ns);
+        }
+    }
+
     /// WASAPI 包：100ns 时间戳 + 帧数 + SILENT 旗标 → 写入计划。
     pub fn on_packet(&mut self, ts_100ns: i64, frames: usize, silent: bool) -> PacketPlan {
         let _ = silent; // 真实静音同样占时间轴：决策与普通包一致（内容置零由写入方执行）
