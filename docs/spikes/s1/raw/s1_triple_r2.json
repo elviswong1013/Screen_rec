@@ -1,0 +1,42 @@
+{
+  "label": "s1_triple_r2", "mode": "paced", "variant": "scale", "routes": 3, "seconds": 10, "fps": 30, "pipe_buf": 4194304,
+  "logical_cores": 24, "wall_s": 10.261, "system_busy_pct": 43.0, "self_cores": 0.76,
+  "routes": [
+  {
+    "route": 0, "variant": "scale", "paced": true, "frames_written": 300, "elapsed_s": 10.177, "free_run_fps": 0.00,
+    "late_max_ms": 931.15, "late_over_budget_frames": 39, "late_steady_max_ms": 257.64, "late_over_budget_steady": 11, "write_wait_steady_ms": {"avg":0.840,"p50":0.810,"p95":1.458,"max":1.952},
+    "connect_ms": 27.0, "first_write_ms": 34.2,
+    "gen_ms": {"avg":3.346,"p50":3.681,"p95":3.881,"max":4.723}, "resize_ms": {"avg":2.138,"p50":2.057,"p95":3.680,"max":5.426}, "convert_ms": {"avg":2.049,"p50":1.988,"p95":2.739,"max":3.383}, "write_wait_ms": {"avg":4.029,"p50":0.809,"p95":1.524,"max":956.559},
+    "pipe_bytes": 933120000, "pipe_MBps": 91.7,
+    "worker_thread_pct": 24.9, "ffmpeg_cores": 0.17, "ffmpeg_exit": 0,
+    "segments": [
+    {"path":"C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1out\\s1_triple_r2\\r0\\out_00000.mkv","duration":6.067,"packets":180,"codec":"h264"},
+    {"path":"C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1out\\s1_triple_r2\\r0\\out_00001.mkv","duration":4.000,"packets":120,"codec":"h264"}
+    ]
+  },
+  {
+    "route": 1, "variant": "scale", "paced": true, "frames_written": 300, "elapsed_s": 10.178, "free_run_fps": 0.00,
+    "late_max_ms": 831.32, "late_over_budget_frames": 35, "late_steady_max_ms": 153.86, "late_over_budget_steady": 7, "write_wait_steady_ms": {"avg":0.892,"p50":0.861,"p95":1.497,"max":2.030},
+    "connect_ms": 35.3, "first_write_ms": 43.4,
+    "gen_ms": {"avg":3.371,"p50":3.710,"p95":3.985,"max":5.736}, "resize_ms": {"avg":2.401,"p50":2.496,"p95":4.013,"max":5.390}, "convert_ms": {"avg":2.057,"p50":1.992,"p95":2.771,"max":3.445}, "write_wait_ms": {"avg":3.733,"p50":0.846,"p95":1.510,"max":856.601},
+    "pipe_bytes": 933120000, "pipe_MBps": 91.7,
+    "worker_thread_pct": 25.9, "ffmpeg_cores": 0.15, "ffmpeg_exit": 0,
+    "segments": [
+    {"path":"C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1out\\s1_triple_r2\\r1\\out_00000.mkv","duration":6.067,"packets":180,"codec":"h264"},
+    {"path":"C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1out\\s1_triple_r2\\r1\\out_00001.mkv","duration":4.000,"packets":120,"codec":"h264"}
+    ]
+  },
+  {
+    "route": 2, "variant": "scale", "paced": true, "frames_written": 300, "elapsed_s": 10.178, "free_run_fps": 0.00,
+    "late_max_ms": 931.67, "late_over_budget_frames": 39, "late_steady_max_ms": 262.72, "late_over_budget_steady": 11, "write_wait_steady_ms": {"avg":0.876,"p50":0.852,"p95":1.433,"max":2.163},
+    "connect_ms": 32.9, "first_write_ms": 41.1,
+    "gen_ms": {"avg":3.321,"p50":3.471,"p95":3.858,"max":4.552}, "resize_ms": {"avg":2.279,"p50":2.373,"p95":3.818,"max":5.125}, "convert_ms": {"avg":2.047,"p50":1.980,"p95":2.639,"max":4.680}, "write_wait_ms": {"avg":4.055,"p50":0.835,"p95":1.435,"max":957.500},
+    "pipe_bytes": 933120000, "pipe_MBps": 91.7,
+    "worker_thread_pct": 25.6, "ffmpeg_cores": 0.16, "ffmpeg_exit": 0,
+    "segments": [
+    {"path":"C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1out\\s1_triple_r2\\r2\\out_00000.mkv","duration":6.067,"packets":180,"codec":"h264"},
+    {"path":"C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1out\\s1_triple_r2\\r2\\out_00001.mkv","duration":4.000,"packets":120,"codec":"h264"}
+    ]
+  }
+  ]
+}

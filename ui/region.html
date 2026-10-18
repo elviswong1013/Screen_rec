@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Screen_rec — 区域截图</title>
+    <!--
+      本页由后端 open_region_overlay() 加载到无边框置顶全屏窗口
+      （label = "region-overlay"，M11-B 契约）。窗口本体透明：body 背景必须为
+      transparent，桌面内容透过 .region-overlay 的半透明遮罩可见。
+    -->
+    <link rel="stylesheet" href="./styles.css" />
+    <style>
+      html, body { background: transparent; }
+      .region-overlay { z-index: auto; }
+      .region-hint.err {
+        background: var(--err-soft); border-color: var(--err); color: var(--err);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="region-overlay" id="overlay">
+      <div class="region-hint" id="hint">按住左键拖出截图区域 · 松开或 Enter 确认 · Esc 取消</div>
+    </div>
+    <script src="./region-geometry.js"></script>
+    <script src="./region.js"></script>
+  </body>
+</html>

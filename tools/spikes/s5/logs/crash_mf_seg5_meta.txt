@@ -1,0 +1,2 @@
+﻿spawn_pid=123808 start_wall=2026-10-16T00:13:17.2780851+08:00
+kill_wall=2026-10-16T00:13:30.2833484+08:00 kill_cmd='taskkill /F /PID 123808' taskkill_output=SUCCESS: The process with PID 123808 has been terminated. reap_ms=40 exit_code=1

@@ -1,0 +1,26 @@
+﻿CMD: ffmpeg -hide_banner -nostdin -f lavfi -i testsrc2=size=1920x1080:rate=30 -t 10 -g 60 -c:v h264_nvenc -y C:\Users\elvis\AppData\Local\Temp\opencode\s2out\single_h264_nvenc.mkv
+START: 2026-10-15T23:27:43.9287680+08:00
+Input #0, lavfi, from 'testsrc2=size=1920x1080:rate=30':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, yuv420p, 1920x1080 [SAR 1:1 DAR 16:9], 30 fps, 30 tbr, 30 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> h264 (h264_nvenc))
+[h264_nvenc @ 00000245ee77b340] Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0
+[h264_nvenc @ 00000245ee77b340] The minimum required Nvidia driver for nvenc is 610.00 or newer
+[vost#0:0/h264_nvenc @ 00000245f0930d80] [enc:h264_nvenc @ 00000245ee6f5300] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.
+[vf#0:0 @ 00000245ee797240] Error sending frames to consumers: Function not implemented
+[vf#0:0 @ 00000245ee797240] Task finished with error: Function not implemented
+[vf#0:0 @ 00000245ee797240] Terminating thread with error: Function not implemented
+[vost#0:0/h264_nvenc @ 00000245f0930d80] [enc:h264_nvenc @ 00000245ee6f5300] Could not open encoder before EOF
+[vost#0:0/h264_nvenc @ 00000245f0930d80] Task finished with error: Invalid argument
+[vost#0:0/h264_nvenc @ 00000245f0930d80] Terminating thread with error: Invalid argument
+[out#0/matroska @ 00000245ee711d00] Nothing was written into output file, because at least one of its streams received no packets.
+frame=    0 fps=0.0 q=0.0 Lsize=       0KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:00.01    
+Conversion failed!
+RESULT: tag=single_h264_nvenc enc=h264_nvenc exit= elapsed_s=0.1 out_bytes=0 speed= first_error=[vost#0:0/h264_nvenc @ 00000245f0930d80] [enc:h264_nvenc @ 00000245ee6f5300] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.
+== ffprobe C:\Users\elvis\AppData\Local\Temp\opencode\s2out\single_h264_nvenc.mkv ==
+duration=[matroska,webm @ 00000277261475c0] EBML header parsing failed C:\Users\elvis\AppData\Local\Temp\opencode\s2out\single_h264_nvenc.mkv: Invalid data found when processing input
+stream=[matroska,webm @ 0000020f72a1e340] EBML header parsing failed C:\Users\elvis\AppData\Local\Temp\opencode\s2out\single_h264_nvenc.mkv: Invalid data found when processing input
+keyframe_count=0
+keyframes=
+max_keyframe_gap_s=0

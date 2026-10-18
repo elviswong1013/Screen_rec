@@ -1,0 +1,25 @@
+[package]
+name = "sr-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Screen_rec 视频捕获（WGC 单路会话 + 源时间戳帧槽节奏器 + 固定画布缩放/NV12 + 命名管道写，REQ-9..13）"
+
+[dependencies]
+# 已批准栈（specs/001-screen-recorder.md §1）：视频捕获 = windows-capture 2.0.1（MIT，
+# WGC 封装，仅取帧；独立线程 + 独立 frame pool；光标开关）。
+windows-capture = "2.0.1"
+
+# S1 定稿 CPU 缩放路径（docs/spikes/s1/s1-pipeline-throughput.md §6：
+# fast_image_resize Bilinear/U8x4 + 手工 BGRA→NV12，≈1.0–1.2ms/帧）。
+fast_image_resize = "5.5"
+
+# 命名管道 server（§3.3：Rust=服务端先监听，sidecar 客户端读取）。
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+] }

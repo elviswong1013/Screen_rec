@@ -1,0 +1,35 @@
+﻿CMD: ffmpeg -hide_banner -nostdin -f lavfi -i testsrc2=size=1920x1080:rate=30 -t 10 -g 60 -deadline good -cpu-used 4 -row-mt 1 -c:v libvpx-vp9 -y C:\Users\elvis\AppData\Local\Temp\opencode\s2out\vp9_smoke.mkv
+START: 2026-10-15T23:29:37.1930452+08:00
+Input #0, lavfi, from 'testsrc2=size=1920x1080:rate=30':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, yuv420p, 1920x1080 [SAR 1:1 DAR 16:9], 30 fps, 30 tbr, 30 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> vp9 (libvpx-vp9))
+[libvpx-vp9 @ 0000024ea6800800] v1.17.0
+[libvpx-vp9 @ 0000024ea6800800] Neither bitrate nor constrained quality specified, using default CRF of 32
+Output #0, matroska, to 'C:\Users\elvis\AppData\Local\Temp\opencode\s2out\vp9_smoke.mkv':
+  Metadata:
+    encoder         : Lavf63.10.100
+  Stream #0:0: Video: vp9 (VP90 / 0x30395056), yuv420p(tv, progressive), 1920x1080 [SAR 1:1 DAR 16:9], q=2-31, 30 fps, 1k tbn
+    Metadata:
+      encoder         : Lavc63.20.100 libvpx-vp9
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+frame=   25 fps=0.0 q=21.0 size=       1KiB time=00:00:00.83 bitrate=   5.1kbits/s speed=1.62x elapsed=0:00:00.51    
+frame=   60 fps= 57 q=32.0 size=       1KiB time=00:00:02.00 bitrate=   2.1kbits/s speed= 1.9x elapsed=0:00:01.05    
+frame=   93 fps= 59 q=27.0 size=    1536KiB time=00:00:03.10 bitrate=4059.0kbits/s speed=1.98x elapsed=0:00:01.56    
+frame=  125 fps= 60 q=27.0 size=    3328KiB time=00:00:04.16 bitrate=6543.1kbits/s speed=   2x elapsed=0:00:02.08    
+frame=  156 fps= 60 q=32.0 size=    3328KiB time=00:00:05.20 bitrate=5242.9kbits/s speed=2.01x elapsed=0:00:02.58    
+frame=  189 fps= 61 q=27.0 size=    5120KiB time=00:00:06.30 bitrate=6657.6kbits/s speed=2.03x elapsed=0:00:03.10    
+frame=  217 fps= 60 q=21.0 size=    5120KiB time=00:00:07.23 bitrate=5798.6kbits/s speed=1.99x elapsed=0:00:03.63    
+frame=  245 fps= 59 q=27.0 size=    6912KiB time=00:00:08.16 bitrate=6933.4kbits/s speed=1.97x elapsed=0:00:04.15    
+frame=  274 fps= 59 q=32.0 size=    6912KiB time=00:00:09.13 bitrate=6199.6kbits/s speed=1.95x elapsed=0:00:04.67    
+[out#0/matroska @ 0000024ea45d98c0] video:8928KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.034137%
+frame=  300 fps= 59 q=32.0 Lsize=    8931KiB time=00:00:10.00 bitrate=7316.5kbits/s speed=1.95x elapsed=0:00:05.12    
+RESULT: tag=vp9_smoke enc=libvpx-vp9 exit=0 elapsed_s=5.24 out_bytes=9145629 speed=1.95 first_error=
+== ffprobe C:\Users\elvis\AppData\Local\Temp\opencode\s2out\vp9_smoke.mkv ==
+duration=10.000000
+stream=vp9,1920,1080,30/1,300
+keyframe_count=5
+keyframes=0.000000 2.000000 4.000000 6.000000 8.000000
+max_keyframe_gap_s=2

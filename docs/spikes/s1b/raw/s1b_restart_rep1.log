@@ -1,0 +1,7 @@
+﻿CMD: pipefault --case restart --label s1b_restart_rep1 --restart-iters 12
+START: 2026-10-16T00:56:24.6084038+08:00
+pipefault case=restart label=s1b_restart_rep1 seconds=10 fps=30 pipe_buf=4194304
+JSON: C:\Users\elvis\Documents\From MSI\git_repository\Screen_rec\docs\spikes\s1b\raw\s1b_restart_rep1.json
+DONE case=restart
+RESULT: label=s1b_restart_rep1 exit=0 elapsed_s=24.76
+PROBE: frames_written= packets_sum= ffmpeg_exit= write_error=

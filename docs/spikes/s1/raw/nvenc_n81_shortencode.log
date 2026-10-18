@@ -1,0 +1,24 @@
+﻿ffmpeg.exe : Input #0, lavfi, from 'testsrc2=size=1920x1080:rate=30':
+At line:1 char:524
++ ... StartNew(); & $ff8 -hide_banner -nostdin -f lavfi -i testsrc2=size=19 ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Input #0, lavfi...x1080:rate=30'::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, yuv420p, 1920x1080 [SAR 1:1 DAR 16:9], 30 fps, 30 tbr, 30 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> h264 (h264_nvenc))
+Output #0, matroska, to 'C:\Users\elvis\AppData\Local\Temp\opencode\s1out\nvenc_n81.mkv':
+  Metadata:
+    encoder         : Lavf62.12.103
+  Stream #0:0: Video: h264 (Main) (H264 / 0x34363248), yuv420p(tv, progressive), 1920x1080 [SAR 1:1 DAR 16:9], q=2-31, 
+2000 kb/s, 30 fps, 1k tbn
+    Metadata:
+      encoder         : Lavc62.28.103 h264_nvenc
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/2000000 buffer size: 4000000 vbv_delay: N/A
+frame=  164 fps=0.0 q=41.0 size=    1024KiB time=00:00:05.36 bitrate=1563.1kbits/s speed=10.4x elapsed=0:00:00.51    
+[out#0/matroska @ 0000016781ee1040] video:2766KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxin
+g overhead: 0.102750%
+frame=  300 fps=0.0 q=40.0 Lsize=    2769KiB time=00:00:09.90 bitrate=2290.9kbits/s speed=12.9x elapsed=0:00:00.76    

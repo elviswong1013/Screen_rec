@@ -1,0 +1,16 @@
+Input #0, lavfi, from 'testsrc2=size=1920x1080:rate=30':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, yuv420p, 1920x1080 [SAR 1:1 DAR 16:9], 30 fps, 30 tbr, 30 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> h264 (h264_qsv))
+[h264_qsv @ 00000242a4d20a00] Using the constant quantization parameter (CQP) by default. Please use the global_quality option and other options for a quality-based mode or the b option and other options for a bitrate-based mode if the default is not the desired choice.
+Output #0, matroska, to 'C:\Users\elvis\AppData\Local\Temp\opencode\s1bout\s1b_connect-timeout_rep1\decoy_%05d.mkv':
+  Metadata:
+    encoder         : Lavf63.10.100
+  Stream #0:0: Video: h264 (H264 / 0x34363248), nv12(tv, progressive), 1920x1080 [SAR 1:1 DAR 16:9], q=2-31, 30 fps, 1k tbn
+    Metadata:
+      encoder         : Lavc63.20.100 h264_qsv
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+frame=   50 fps= 49 q=26.0 size=       1KiB time=00:00:01.56 bitrate=   3.0kbits/s speed=1.52x elapsed=0:00:01.03    frame=  236 fps=154 q=35.0 size=    2816KiB time=00:00:07.76 bitrate=2970.2kbits/s speed=5.05x elapsed=0:00:01.53    frame=  484 fps=235 q=35.0 size=    7680KiB time=00:00:16.03 bitrate=3924.0kbits/s speed= 7.8x elapsed=0:00:02.05    frame=  728 fps=283 q=35.0 size=   12800KiB time=00:00:24.16 bitrate=4338.9kbits/s speed=9.38x elapsed=0:00:02.57    frame=  965 fps=313 q=35.0 size=   17920KiB time=00:00:32.06 bitrate=4578.0kbits/s speed=10.4x elapsed=0:00:03.08    frame= 1216 fps=337 q=35.0 size=   23040KiB time=00:00:40.43 bitrate=4668.0kbits/s speed=11.2x elapsed=0:00:03.60    frame= 1468 fps=356 q=35.0 size=   27904KiB time=00:00:48.83 bitrate=4681.0kbits/s speed=11.8x elapsed=0:00:04.12    frame= 1708 fps=369 q=35.0 size=   33024KiB time=00:00:56.83 bitrate=4760.1kbits/s speed=12.3x elapsed=0:00:04.63    [out#0/matroska @ 00000242a2a30dc0] video:35402KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.043880%
+frame= 1800 fps=373 q=35.0 Lsize=   35417KiB time=00:00:59.90 bitrate=4843.7kbits/s speed=12.4x elapsed=0:00:04.81    

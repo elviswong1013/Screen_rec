@@ -1,0 +1,11 @@
+﻿BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\b_control_devmix.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=384480 duration_s=8.010000
+BASIC peak_dbfs=-20.51 rms_dbfs=-26.48
+FFT nfft=32768 bin_hz=1.464844 frames=21 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=439.453 db_fs=-27.27 db_rel_ref=-0.43
+TONE freq=880.0 peak_at=880.371 db_fs=-26.84 db_rel_ref=0.00
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-191.30 median_db_rel_ref=-164.46
+GLOBAL_PEAK freq=880.371 db_fs=-26.84
+LEAK freq=440.0 rel_db=-0.43 limit_db=-40.00 VIOLATION
+VERDICT ref=880.0 threshold_db=-40.00 FAIL
+CSV path=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\b_control_devmix.csv

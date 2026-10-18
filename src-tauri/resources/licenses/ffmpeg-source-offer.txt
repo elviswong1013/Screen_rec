@@ -1,0 +1,57 @@
+FFmpeg LGPL 合规与源码获取说明（Screen_rec 发行包）
+=====================================================
+
+本发行包随附的 ffmpeg.exe / ffprobe.exe 来自项目锁定的 BtbN Windows LGPL 构建：
+
+- 精确版本：FFmpeg n8.1.3-18-g46d899d7a0
+  = tag `n8.1.3` 之后第 18 个提交，commit `46d899d7a02bc63237472cc4897258d5ddf274ac`
+  （`ffmpeg -version` 首行报告 `n8.1.3-18-g46d899d7a0-20261015`；应用 `--self-check`
+   输出该首行，可直接核对）
+- 构建方/构建脚本：BtbN/FFmpeg-Builds（https://github.com/BtbN/FFmpeg-Builds），
+  构建日期 2026-10-15（版本串 `--extra-version=20261015`）
+- 构建包文件名：ffmpeg-n8.1-latest-win64-lgpl-8.1.zip
+- 构建包 SHA-256：337B85465B9CD0CFCB3376B84988912C3999E3FB69BC025F0B4360B4B1C8C240
+- ffmpeg.exe SHA-256：3B57117B384DF98F2B8D01876DF0A596A0B6EBF45F756B30F15D6F65AB8251C5
+- ffprobe.exe SHA-256：5B9724EE7A115D5A8458D41BD2E0CE6206847E2B76105E822061A4421322CDE9
+- 许可：GNU Lesser General Public License v3（LGPL-3.0-or-later，构建启用
+  `--enable-version3` 且未启用 GPL 组件）；完整文本见同目录 FFmpeg-LICENSE.txt
+  （构建包随附 LICENSE.txt 原样复制，SHA-256
+  DA7EABB7BAFDF7D3AE5E9F223AA5BDC1EECE45AC569DC21B3B037520B4464768）。
+
+对应源码（精确获取方式）
+------------------------
+本二进制**不是**由 FFmpeg `n8.1` 或 `n8.1.3` 发行 tag 直接构建，而是上述提交
+（`n8.1.3` + 18 commits）。与二进制完全对应的源码请按以下任一方式获取：
+
+1) Git（推荐，可核对 commit 与 describe）：
+   git clone https://github.com/FFmpeg/FFmpeg.git
+   cd FFmpeg
+   git checkout 46d899d7a02bc63237472cc4897258d5ddf274ac
+   git describe --tags --always
+   # 预期：n8.1.3-18-g46d899d7a0（与 ffmpeg -version 的版本串一致）
+
+2) 该 commit 的源码快照（GitHub 归档，无需 git 历史）：
+   https://github.com/FFmpeg/FFmpeg/archive/46d899d7a02bc63237472cc4897258d5ddf274ac.tar.gz
+
+3) 上游发行 tag（仅供对照；**注意少 18 个提交，不能单独作为对应源码**）：
+   https://github.com/FFmpeg/FFmpeg/releases/tag/n8.1.3
+
+4) BtbN 构建脚本/配置（复现构建环境；对应 2026-10-15 构建）：
+   https://github.com/BtbN/FFmpeg-Builds
+
+任何获取上述源码的媒介费用由索取方承担；本说明随每个发行包附带。
+
+LGPL 合规要点
+-------------
+1. 本项目仅以**独立进程**（sidecar）方式调用 ffmpeg/ffprobe，不静态/动态链接其库；
+   应用与 FFmpeg 之间通过命令行参数、标准输入/输出与文件交互。
+2. 上述源码获取方式长期有效；如上游仓库迁移，可按 commit
+   `46d899d7a02bc63237472cc4897258d5ddf274ac` 在任意 FFmpeg 官方镜像取得同一快照。
+3. 本发行包未修改 FFmpeg 源码或二进制；如需替换/重新链接 FFmpeg，可将
+   `SCREENREC_FFMPEG_DIR` 环境变量指向自备的 ffmpeg/ffprobe 目录（应用优先使用该目录），
+   或用同版本文件替换安装目录 `ffmpeg/` 下的同名文件。
+4. 构建配置审计（与随包二进制 `-version` 输出一致）：`--enable-version3`、
+   `--disable-libx264`、`--disable-libx265`、`--disable-libxavs2`、`--disable-libxvid`；
+   禁用 GPL 编码器（libx264/libx265/libxavs2/libxvid）。
+
+本文件与 FFmpeg-LICENSE.txt 位于安装目录 `licenses/`；二进制位于 `ffmpeg/`。

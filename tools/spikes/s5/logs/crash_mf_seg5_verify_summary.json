@@ -1,0 +1,41 @@
+﻿[
+    {
+        "segment":  "out_000.mkv",
+        "size":  2493468,
+        "ffprobe_exit":  0,
+        "duration":  "6.058000 size=2493468",
+        "nb_streams":  "3",
+        "video":  "codec_name=h264,width=1920,height=1080,nb_read_frames=180",
+        "audio_frames":  "282;282",
+        "first_vpacket":  "0.021000,K__",
+        "decode_exit":  0,
+        "decode_err_lines":  0,
+        "decode_err_first":  ""
+    },
+    {
+        "segment":  "out_001.mkv",
+        "size":  1249241,
+        "ffprobe_exit":  0,
+        "duration":  "4.026000 size=1249241",
+        "nb_streams":  "3",
+        "video":  "codec_name=h264,width=1920,height=1080,nb_read_frames=120",
+        "audio_frames":  "186;186",
+        "first_vpacket":  "0.000000,K__",
+        "decode_exit":  0,
+        "decode_err_lines":  0,
+        "decode_err_first":  ""
+    },
+    {
+        "segment":  "out_002.mkv",
+        "size":  786432,
+        "ffprobe_exit":  0,
+        "duration":  "N/A size=786432",
+        "nb_streams":  "3",
+        "video":  "[matroska,webm @ 000001f13eb90580] File ended prematurely,codec_name=h264,width=1920,height=1080,nb_read_frames=90",
+        "audio_frames":  "140;140;[matroska,webm @ 000001958060fe00] File ended prematurely",
+        "first_vpacket":  "0.000000,K__",
+        "decode_exit":  0,
+        "decode_err_lines":  6,
+        "decode_err_first":  "ffmpeg.exe : [in#0/matroska,webm @ 00000230757725c0] File ended prematurely"
+    }
+]

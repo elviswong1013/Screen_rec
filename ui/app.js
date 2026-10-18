@@ -1,0 +1,1101 @@
+// ============================================================================
+// ui/app.js — Screen_rec 前端主逻辑（中文单页桌面应用）
+// 数据层全部经 api.js（Tauri 真实命令 / 浏览器 mock 自动切换）。
+// 经典脚本加载（file:// 兼容，见 api.js 头注），依赖 api.js 先于本文件加载。
+// 设计说明：docs/design/ui-spec.md
+// ============================================================================
+(() => {
+'use strict';
+const { api, isMock, subscribeEvents } = window.SR;
+
+// ---------------------------------------------------------------------------
+// 工具
+// ---------------------------------------------------------------------------
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function fmtTime(ms) {
+  const s = Math.floor(ms / 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(Math.floor(s / 3600))}:${p(Math.floor((s % 3600) / 60))}:${p(s % 60)}`;
+}
+
+function fmtWhen(ts) {
+  const d = new Date(ts);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function fileStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+const ICONS = {
+  monitor: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>',
+  window: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg>',
+  mic: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 19v3"/></svg>',
+  inbox: '<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>',
+};
+
+function toast(kind, msg, path) {
+  const root = $('#toast-root');
+  const el = document.createElement('div');
+  el.className = `toast ${kind}`;
+  el.innerHTML = `<div class="msg">${esc(msg)}${path ? `<div class="path">${esc(path)}</div>` : ''}</div>`;
+  root.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 300);
+  }, path ? 6500 : 4000);
+}
+
+// ---------------------------------------------------------------------------
+// 全局状态
+// ---------------------------------------------------------------------------
+const state = {
+  view: 'record',
+  settings: null,
+  caps: null,
+  monitors: [],
+  windows: [],
+  audioSources: [],
+  audioDevices: [],
+  targetsLoading: false,
+  targetTab: 'windows',
+  search: '',
+  selected: new Set(),       // 'monitor:0' | 'window:66050'
+  recordMode: 'screen',      // 'screen' | 'audio'
+  cfg: {
+    canvas: '1920x1080', fps: 30, cursor: true,
+    audioMode: 'isolated',
+    srcSystem: true, srcMic: false, srcApps: new Set(),
+    outputDir: '',
+  },
+  audioOnly: { srcSystem: true, srcMic: false, srcApps: new Set(), outputDir: '' },
+  routes: new Map(),         // routeId -> 卡片状态
+  merge: { extra: [], picked: new Set(), running: false, progress: 0 },
+  shotHistory: [],
+  recovery: [],              // 未收尾会话
+  recentFiles: [],
+  starting: false,
+};
+
+const targetKey = (t) => (t.hwnd !== undefined ? `window:${t.hwnd}` : `monitor:${t.index}`);
+
+function findTarget(key) {
+  const [kind, id] = key.split(':');
+  if (kind === 'monitor') return state.monitors.find((m) => m.index === Number(id));
+  return state.windows.find((w) => w.hwnd === Number(id));
+}
+
+// ---------------------------------------------------------------------------
+// 导航
+// ---------------------------------------------------------------------------
+$$('.nav-item').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    state.view = btn.dataset.nav;
+    $$('.nav-item').forEach((b) => b.classList.toggle('active', b === btn));
+    $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${state.view}`));
+    if (state.view === 'merge') renderMerge();
+    if (state.view === 'settings') renderSettings();
+    if (state.view === 'screenshot') renderScreenshotView();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 能力探测 / 降级提示（AC-8）
+// ---------------------------------------------------------------------------
+function renderCaps() {
+  const c = state.caps;
+  const row = $('#caps-row');
+  if (!c) { row.innerHTML = '<span class="badge">环境探测中…</span>'; return; }
+  const encName = c.selected_encoder || c.encoders.find((e) => e.available)?.name;
+  row.innerHTML = [
+    c.loopback_ok
+      ? '<span class="badge ok">按应用音频 可用</span>'
+      : '<span class="badge warn">按应用音频 不可用</span>',
+    encName
+      ? `<span class="badge ok">编码器 ${esc(encName)}</span>`
+      : '<span class="badge err">无可用编码器</span>',
+    c.mic_ok
+      ? '<span class="badge ok">麦克风权限 已允许</span>'
+      : '<span class="badge warn">麦克风权限 未允许</span>',
+    c.wgc_ok
+      ? '<span class="badge ok">画面捕获 可用</span>'
+      : '<span class="badge err">画面捕获 不可用</span>',
+  ].join('');
+
+  const deg = $('#degraded-mount');
+  const msgs = [];
+  if (c.os_supported === false) msgs.push('系统版本低于 Windows 10 2004，部分捕获能力不可用。');
+  if (!c.loopback_ok) msgs.push(`当前系统不支持按应用音频捕获：应用音源与「隔离」模式已禁用，仍可使用系统音频与麦克风。${c.layers?.loopback?.detail ? `（${c.layers.loopback.detail}）` : ''}`);
+  if (!c.mic_ok) msgs.push(`麦克风不可用：麦克风音源已禁用，可在 Windows 设置 → 隐私 → 麦克风 中允许。${c.layers?.mic?.detail ? `（${c.layers.mic.detail}）` : ''}`);
+  if (!encName) msgs.push('未探测到可用的 H.264 编码器，无法开始录制。已探测：' + (c.encoders.map((e) => `${e.name}（${e.available ? '可用' : '不可用'}）`).join('、') || '无') + '。');
+  deg.innerHTML = msgs.map((m) => `<div class="notice warn">${esc(m)}</div>`).join('');
+}
+
+// ---------------------------------------------------------------------------
+// 录制视图 — 目标列表 / 音源（左栏）
+// ---------------------------------------------------------------------------
+async function refreshTargets() {
+  if (state.targetsLoading) return;
+  state.targetsLoading = true;
+  renderLeftPanel();
+  try {
+    const [tg, sources] = await Promise.all([api.listTargets(), api.listAudioSources()]);
+    state.monitors = tg.monitors;
+    state.windows = tg.windows;
+    state.audioSources = sources;
+    // 清理已消失目标的选中态
+    for (const key of [...state.selected]) if (!findTarget(key)) state.selected.delete(key);
+  } catch (e) {
+    toast('err', `刷新目标列表失败：${e}`);
+  }
+  state.targetsLoading = false;
+  renderLeftPanel();
+  renderConfig(); // 全音轨模式下的应用音源列表随刷新更新
+  renderShotLists();
+  renderStartBar();
+}
+
+function renderLeftPanel() {
+  const body = $('#left-panel-body');
+  $('#left-panel-title').firstChild.textContent = state.recordMode === 'screen' ? '目标' : '音源';
+  $('#btn-refresh').style.display = state.recordMode === 'screen' ? '' : 'none';
+
+  if (state.targetsLoading) {
+    body.innerHTML = '<div class="skel"></div>'.repeat(5);
+    return;
+  }
+  if (state.recordMode === 'audio') { renderAudioSourcesPanel(body, state.audioOnly); return; }
+
+  body.innerHTML = `
+    <div class="target-tools">
+      <input type="text" id="target-search" placeholder="搜索窗口标题 / 应用名 / 进程名" value="${esc(state.search)}" />
+    </div>
+    <div class="tgt-tabs">
+      <button data-tab="windows"></button><button data-tab="monitors"></button>
+    </div>
+    <div class="tgt-list" id="tgt-list"></div>`;
+
+  // 搜索输入只刷新列表区，避免重建输入框打断中文输入法组合
+  $('#target-search').addEventListener('input', (e) => { state.search = e.target.value; updateTargetList(); });
+  $$('.tgt-tabs button', body).forEach((b) => b.addEventListener('click', () => {
+    state.targetTab = b.dataset.tab;
+    updateTargetList();
+  }));
+  updateTargetList();
+}
+
+function updateTargetList() {
+  const q = state.search.trim().toLowerCase();
+  const winRows = state.windows
+    .filter((w) => !q || w.title.toLowerCase().includes(q) || w.app_name.toLowerCase().includes(q) || w.process_name.toLowerCase().includes(q))
+    .map((w) => targetRow(w, `PID ${w.pid}`, `${esc(w.app_name)} · ${esc(w.process_name)}`));
+  const monRows = state.monitors.map((m) =>
+    targetRow(m, m.primary ? '主显示器' : '', `${m.width}×${m.height} · 位置 (${m.x}, ${m.y})`));
+
+  const tabs = $$('.tgt-tabs button');
+  tabs[0].className = state.targetTab === 'windows' ? 'active' : '';
+  tabs[0].innerHTML = `窗口 <span class="muted">${winRows.length}</span>`;
+  tabs[1].className = state.targetTab === 'monitors' ? 'active' : '';
+  tabs[1].innerHTML = `显示器 <span class="muted">${monRows.length}</span>`;
+
+  const list = $('#tgt-list');
+  if (state.targetTab === 'windows') {
+    list.innerHTML = winRows.length
+      ? winRows.join('')
+      : `<div class="empty">${ICONS.inbox}<br>${q ? '没有匹配的窗口' : '未发现可捕获的窗口'}</div>`;
+  } else {
+    list.innerHTML = monRows.length
+      ? monRows.join('')
+      : `<div class="empty">${ICONS.inbox}<br>未发现显示器</div>`;
+  }
+  bindTargetRows(list);
+}
+
+function targetRow(t, tag, meta) {
+  const key = targetKey(t);
+  const name = t.hwnd !== undefined ? t.title : `${t.name}`;
+  const icon = t.hwnd !== undefined ? ICONS.window : ICONS.monitor;
+  return `
+    <div class="tgt-row ${state.selected.has(key) ? 'selected' : ''}" data-key="${key}">
+      <span class="icon">${icon}</span>
+      <span class="main">
+        <span class="name">${esc(name)}</span>
+        <span class="meta">${meta}</span>
+      </span>
+      ${tag ? `<span class="tag">${esc(tag)}</span>` : ''}
+    </div>`;
+}
+
+function bindTargetRows(body) {
+  $$('.tgt-row', body).forEach((row) => {
+    row.addEventListener('click', () => {
+      const key = row.dataset.key;
+      state.selected.has(key) ? state.selected.delete(key) : state.selected.add(key);
+      row.classList.toggle('selected');
+      renderStartBar();
+      renderConfig(); // 隔离模式下「显示器目标」音源默认值随目标类型变化
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 录制视图 — 配置面板（右栏）
+// ---------------------------------------------------------------------------
+function renderConfig() {
+  const panel = $('#config-panel');
+  if (state.recordMode === 'audio') {
+    panel.innerHTML = `
+      <div class="panel-title">输出</div>
+      <div class="field">
+        <label>输出目录</label>
+        <input type="text" id="cfg-outdir" value="${esc(state.audioOnly.outputDir)}" />
+        <div class="hint">每个来源输出一个独立 WAV 文件（48kHz），停止即成品。</div>
+      </div>
+      <div class="notice info">纯录音支持系统音频、麦克风与正在发声的应用，可多选；各来源互不混音。</div>`;
+    $('#cfg-outdir').addEventListener('input', (e) => { state.audioOnly.outputDir = e.target.value; });
+    return;
+  }
+
+  const c = state.caps;
+  const cfg = state.cfg;
+  const loopbackOk = c?.loopback_ok !== false;
+  const micOk = c?.mic_ok === true && !!state.settings?.mic_device;
+  const canvasOpts = ['1280x720', '1920x1080', '2560x1440', '3840x2160']
+    .filter((s) => {
+      const [w, h] = s.split('x').map(Number);
+      return !c || (w <= c.canvas_limits.max_w && h <= c.canvas_limits.max_h);
+    })
+    .map((s) => `<option value="${s}" ${cfg.canvas === s ? 'selected' : ''}>${s.replace('x', ' × ')}</option>`)
+    .join('');
+
+  const hasMonitorTarget = [...state.selected].some((k) => k.startsWith('monitor:'));
+  const hasWindowTarget = [...state.selected].some((k) => k.startsWith('window:'));
+  const micName = micOk ? esc(state.audioDevices.find((d) => d.id === state.settings.mic_device)?.name || state.settings.mic_device) : '';
+
+  let audioHtml = '';
+  if (!loopbackOk) {
+    audioHtml = `
+      ${checkRow('cfg-src-system', '系统音频（整机混合）', cfg.srcSystem)}
+      ${checkRow('cfg-src-mic', '麦克风', cfg.srcMic, !micOk, micOk ? micName : state.caps?.mic_ok !== true ? '权限未允许或无设备' : '未在设置中选择设备')}`;
+  } else if (cfg.audioMode === 'isolated') {
+    const hints = [];
+    if (hasWindowTarget) hints.push('窗口目标自动携带该应用的独立音轨；同一应用的所有窗口共享一条音轨。');
+    if (hasMonitorTarget) hints.push('显示器目标无对应应用，音源需显式选择（默认系统音频）。');
+    if (!hasWindowTarget && !hasMonitorTarget) hints.push('选择目标后，此处按目标类型给出可用音源。');
+    audioHtml = `
+      <div class="hint" style="margin:-4px 0 8px;">${hints.join(' ')}</div>
+      ${hasMonitorTarget ? checkRow('cfg-src-system', '系统音频（整机混合）', cfg.srcSystem) : ''}
+      ${checkRow('cfg-src-mic', '麦克风（独立音轨，不混音）', cfg.srcMic, !micOk, micOk ? micName : '未在设置中选择设备')}`;
+  } else {
+    const apps = state.audioSources.map((a) =>
+      checkRow(`cfg-app-${a.pid}`, `${esc(a.app_name)}`, cfg.srcApps.has(a.pid), false, `${esc(a.process_name)} · PID ${a.pid}${a.active ? '' : ' · 未在发声'}`)).join('');
+    audioHtml = `
+      ${checkRow('cfg-src-system', '系统音频（整机混合）', cfg.srcSystem)}
+      ${checkRow('cfg-src-mic', '麦克风（独立音轨）', cfg.srcMic, !micOk, micOk ? micName : '未在设置中选择设备')}
+      <div class="field" style="margin-top:8px;">
+        <label>追加应用音源（启动时快照；录制中新增音源不自动加入）</label>
+        ${apps || '<div class="empty">当前没有正在发声的应用</div>'}
+        <button class="btn-sm btn-ghost" id="cfg-apps-all">全选</button>
+      </div>`;
+  }
+
+  panel.innerHTML = `
+    <div class="panel-title">录制配置</div>
+    <div class="field-row">
+      <div class="field"><label>输出画布（固定，窗口变化时等比缩放）</label><select id="cfg-canvas">${canvasOpts}</select></div>
+      <div class="field"><label>帧率</label>
+        <select id="cfg-fps">
+          <option value="30" ${cfg.fps === 30 ? 'selected' : ''}>30 fps</option>
+          <option value="60" ${cfg.fps === 60 ? 'selected' : ''}>60 fps</option>
+        </select>
+      </div>
+    </div>
+    ${checkRow('cfg-cursor', '捕获光标', cfg.cursor)}
+    <div class="field" style="margin-top:10px;">
+      <label>音轨模式</label>
+      <label class="check-row ${loopbackOk ? '' : 'disabled'}">
+        <input type="radio" name="audio-mode" value="isolated" ${cfg.audioMode === 'isolated' ? 'checked' : ''} ${loopbackOk ? '' : 'disabled'} />
+        隔离（默认）：仅目标应用${cfg.srcMic ? ' + 麦克风' : ''}，各为独立音轨
+      </label>
+      <label class="check-row">
+        <input type="radio" name="audio-mode" value="all_tracks" ${cfg.audioMode === 'all_tracks' ? 'checked' : ''} />
+        全音轨：目标应用 + 系统 + 麦克风 + 追加应用，全部独立成轨
+      </label>
+    </div>
+    <div class="field"><label>音源</label>${audioHtml}</div>
+    <div class="field">
+      <label>输出目录</label>
+      <input type="text" id="cfg-outdir" value="${esc(cfg.outputDir)}" />
+    </div>`;
+
+  // 绑定
+  $('#cfg-canvas').addEventListener('change', (e) => { cfg.canvas = e.target.value; renderStartBar(); });
+  $('#cfg-fps').addEventListener('change', (e) => { cfg.fps = Number(e.target.value); renderStartBar(); });
+  $('#cfg-outdir').addEventListener('input', (e) => { cfg.outputDir = e.target.value; });
+  $$('input[name="audio-mode"]', panel).forEach((r) => r.addEventListener('change', () => { cfg.audioMode = r.value; renderConfig(); }));
+  bindCheck('#cfg-cursor', (v) => { cfg.cursor = v; });
+  bindCheck('#cfg-src-system', (v) => { cfg.srcSystem = v; });
+  bindCheck('#cfg-src-mic', (v) => { cfg.srcMic = v; renderConfig(); });
+  state.audioSources.forEach((a) => bindCheck(`#cfg-app-${a.pid}`, (v) => { v ? cfg.srcApps.add(a.pid) : cfg.srcApps.delete(a.pid); renderStartBar(); }));
+  $('#cfg-apps-all')?.addEventListener('click', () => {
+    state.audioSources.forEach((a) => cfg.srcApps.add(a.pid));
+    renderConfig(); renderStartBar();
+  });
+
+  function bindCheck(sel, fn) {
+    const el = $(sel, panel);
+    if (el) el.addEventListener('change', () => { fn(el.checked); });
+  }
+}
+
+function checkRow(id, label, checked, disabled = false, sub = '') {
+  return `
+    <label class="check-row ${disabled ? 'disabled' : ''}">
+      <input type="checkbox" id="${id}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''} />
+      <span>${label}</span>
+      ${sub ? `<span class="sub">${sub}</span>` : ''}
+    </label>`;
+}
+
+// 纯录音左栏：音源多选
+function renderAudioSourcesPanel(body, store) {
+  const micOk = state.caps?.mic_ok === true && !!state.settings?.mic_device;
+  const micName = micOk ? esc(state.audioDevices.find((d) => d.id === state.settings.mic_device)?.name || state.settings.mic_device) : '';
+  const loopbackOk = state.caps?.loopback_ok !== false;
+  const apps = state.audioSources.map((a) =>
+    checkRow(`ao-app-${a.pid}`, esc(a.app_name), store.srcApps.has(a.pid), !loopbackOk, `${esc(a.process_name)} · PID ${a.pid}`)).join('');
+  body.innerHTML = `
+    ${checkRow('ao-system', '系统音频（整机混合）', store.srcSystem)}
+    ${checkRow('ao-mic', '麦克风', store.srcMic, !micOk, micOk ? micName : '权限未允许或未选设备')}
+    <div class="field" style="margin-top:10px;">
+      <label>应用（按进程隔离）</label>
+      ${apps || '<div class="empty">当前没有正在发声的应用</div>'}
+    </div>
+    ${loopbackOk ? '' : '<div class="notice warn">按应用音频在当前系统不可用。</div>'}`;
+  const bind = (sel, fn) => { const el = $(sel, body); if (el) el.addEventListener('change', () => { fn(el.checked); renderStartBar(); }); };
+  bind('#ao-system', (v) => { store.srcSystem = v; });
+  bind('#ao-mic', (v) => { store.srcMic = v; });
+  state.audioSources.forEach((a) => bind(`#ao-app-${a.pid}`, (v) => { v ? store.srcApps.add(a.pid) : store.srcApps.delete(a.pid); }));
+}
+
+// ---------------------------------------------------------------------------
+// 录制视图 — 开始栏与启动
+// ---------------------------------------------------------------------------
+function renderStartBar() {
+  const bar = $('#start-bar');
+  const [w, h] = state.cfg.canvas.split('x');
+  let summary, canStart, label;
+  if (state.recordMode === 'screen') {
+    const n = state.selected.size;
+    summary = n
+      ? `已选 <b>${n}</b> 个目标 · ${w}×${h} @${state.cfg.fps}fps · ${state.cfg.audioMode === 'isolated' ? '隔离' : '全音轨'}`
+      : '先在左侧选择要录制的窗口或显示器（可多选，每路独立输出）';
+    canStart = n > 0 && !!state.caps?.encoders.some((e) => e.available);
+    label = n > 1 ? `开始录制（${n} 路）` : '开始录制';
+  } else {
+    const n = audioOnlySourceCount();
+    summary = n ? `已选 <b>${n}</b> 个音源 · 各输出独立 WAV` : '先在左侧选择至少一个音源';
+    canStart = n > 0;
+    label = '开始录音';
+  }
+  bar.innerHTML = `
+    <span class="summary">${summary}</span>
+    <span class="muted" style="font-size:12px;">Ctrl+Enter</span>
+    <button class="${state.recordMode === 'screen' ? 'btn-rec' : 'btn-primary'}" id="btn-start" ${canStart && !state.starting ? '' : 'disabled'}>
+      ${state.starting ? '<span class="spin"></span> 启动中…' : label}
+    </button>`;
+  $('#btn-start').addEventListener('click', startRecording);
+}
+
+function audioOnlySourceCount() {
+  const s = state.audioOnly;
+  return (s.srcSystem ? 1 : 0) + (s.srcMic ? 1 : 0) + s.srcApps.size;
+}
+
+function buildAudioPlan(target) {
+  const cfg = state.cfg;
+  const loopbackOk = state.caps?.loopback_ok !== false;
+  const isWindow = target?.hwnd !== undefined;
+  // 后端校验（E_INVALID_AUDIO_PLAN）：isolated 不得包含 system 音源（隔离=目标应用轨[+麦克风]）。
+  // 显示器/区域目标无天然应用 → 该路按 all_tracks 携带显式选择的音源（REQ-17）。
+  const mode = (loopbackOk && cfg.audioMode === 'isolated' && isWindow) ? 'isolated' : 'all_tracks';
+  const sources = [];
+  const labels = [];
+  const addApp = (pid, created, name) => {
+    if (sources.some((s) => s.kind === 'app' && s.pid === pid)) return;
+    sources.push({ kind: 'app', pid, created_at_unix_ms: created ?? 0 });
+    labels.push(`应用 · ${name}`);
+  };
+  if (isWindow && loopbackOk) {
+    addApp(target.pid, target.created_at_unix_ms, target.app_name);
+    if (mode === 'all_tracks' && cfg.srcSystem) { sources.push({ kind: 'system' }); labels.push('系统音频'); }
+  } else if (!isWindow && cfg.srcSystem) {
+    sources.push({ kind: 'system' });
+    labels.push('系统音频');
+  } else if (isWindow && !loopbackOk && cfg.srcSystem) {
+    // 降级环境（无进程环回）：窗口目标只余系统/麦克风可选
+    sources.push({ kind: 'system' });
+    labels.push('系统音频');
+  }
+  if (cfg.srcMic && state.settings?.mic_device) {
+    sources.push({ kind: 'mic', device_id: state.settings.mic_device });
+    labels.push('麦克风');
+  }
+  if (mode === 'all_tracks' && loopbackOk) {
+    for (const pid of cfg.srcApps) {
+      const a = state.audioSources.find((x) => x.pid === pid);
+      if (a) addApp(a.pid, a.created_at_unix_ms, a.app_name);
+    }
+  }
+  return { mode, sources, labels };
+}
+
+async function startRecording() {
+  if (state.starting) return;
+  state.starting = true;
+  renderStartBar();
+  try {
+    if (state.recordMode === 'screen') {
+      const [cw, ch] = state.cfg.canvas.split('x').map(Number);
+      const outDir = state.cfg.outputDir.trim() || state.settings.output_dir;
+      const routeCfgs = [...state.selected].map((key) => {
+        const t = findTarget(key);
+        const target = t.hwnd !== undefined ? { kind: 'window', hwnd: t.hwnd } : { kind: 'monitor', index: t.index };
+        const audio = buildAudioPlan(t);
+        return {
+          target,
+          video: { canvas_w: cw, canvas_h: ch, fps: state.cfg.fps, cursor: state.cfg.cursor },
+          audio: { mode: audio.mode, sources: audio.sources },
+          output_dir: outDir,
+          _ui_label: t.hwnd !== undefined ? t.app_name : `显示器${t.index + 1} · ${t.name}`,
+          _ui_track_labels: audio.labels,
+        };
+      });
+      // 前端预检：任何一路音源为空都会被后端拒绝（批次全成功或回滚），提前拦截并说明
+      const empty = routeCfgs.filter((c) => c.audio.sources.length === 0);
+      if (empty.length) {
+        toast('warn', `${empty.map((c) => c._ui_label).join('、')} 没有任何音源：请勾选系统音频或麦克风（显示器目标无对应应用，音源需显式选择）`);
+        state.starting = false;
+        renderStartBar();
+        return;
+      }
+      const { route_ids } = await api.startRoutes(routeCfgs);
+      route_ids.forEach((id, i) => registerRoute(id, {
+        kind: 'video',
+        label: routeCfgs[i]._ui_label,
+        icon: routeCfgs[i].target.kind === 'window' ? ICONS.window : ICONS.monitor,
+        trackLabels: routeCfgs[i]._ui_track_labels,
+      }));
+      state.selected.clear();
+      toast('ok', `已开始 ${route_ids.length} 路录制`);
+    } else {
+      const s = state.audioOnly;
+      const sources = [];
+      const labels = [];
+      if (s.srcSystem) { sources.push({ kind: 'system' }); labels.push('系统音频'); }
+      if (s.srcMic && state.settings?.mic_device) { sources.push({ kind: 'mic', device_id: state.settings.mic_device }); labels.push('麦克风'); }
+      for (const pid of s.srcApps) {
+        const a = state.audioSources.find((x) => x.pid === pid);
+        if (a) { sources.push({ kind: 'app', pid: a.pid, created_at_unix_ms: a.created_at_unix_ms ?? 0 }); labels.push(`应用 · ${a.app_name}`); }
+      }
+      const outDir = s.outputDir.trim() || state.settings.output_dir;
+      // 后端契约：一次调用 N 源 → N 个共享 handle 的 route id（任一停止即整组停止）
+      const { route_ids } = await api.startAudioOnly([{ sources, output_dir: outDir, _ui_track_labels: labels }]);
+      route_ids.forEach((id, i) => registerRoute(id, {
+        kind: 'audio',
+        label: labels[i] ? `录音 · ${labels[i]}` : `录音 ${i + 1}`,
+        icon: ICONS.mic,
+        trackLabels: [labels[i] || `来源 ${i + 1}`],
+      }));
+      toast('ok', `已开始录音（${route_ids.length} 个来源）`);
+    }
+    renderLeftPanel();
+  } catch (e) {
+    toast('err', `启动失败：${e}`);
+  }
+  state.starting = false;
+  renderStartBar();
+}
+
+function registerRoute(id, meta) {
+  state.routes.set(id, {
+    id, ...meta,
+    state: 'starting',
+    startedAt: Date.now(),
+    error: null, progress: 0, path: null, paths: null,
+  });
+  // 应用先于注册到达的状态事件（后端可能在 start_routes 返回前已推送 recording）
+  const pending = pendingStates.get(id);
+  if (pending) {
+    pendingStates.delete(id);
+    applyRouteState(state.routes.get(id), pending.state, pending.final_path);
+  }
+  renderRoutes();
+}
+
+// 后端状态机 recording → stopping → finalized | failed（M9-B §3.3）映射到卡片状态；
+// mock 另有 finalizing（带 progress）/ done，一并兼容。
+function applyRouteState(r, rawState, finalPath) {
+  if (!r) return;
+  const map = { finalized: 'done', failed: 'failed' };
+  r.state = map[rawState] || rawState;
+  if (finalPath) { r.path = finalPath; r.paths = [finalPath]; r.state = 'done'; }
+  if (['done', 'failed'].includes(r.state) && !r.finishedAt) r.finishedAt = Date.now();
+}
+
+// 早于注册到达的 route_state 暂存（真实后端下 subscribe 快照与启动回包存在时序竞争）
+const pendingStates = new Map();
+
+// ---------------------------------------------------------------------------
+// 录制视图 — 录制中卡片
+// ---------------------------------------------------------------------------
+const STATE_LABEL = {
+  starting: ['准备中', 'warn'],
+  recording: ['录制中', 'rec'],
+  stopping: ['停止中', 'warn'],
+  finalizing: ['收尾中', 'warn'],
+  done: ['已完成', 'ok'],
+  failed: ['失败', 'err'],
+  error: ['错误', 'err'],
+};
+
+function renderRoutes() {
+  const mount = $('#routes-mount');
+  const routes = [...state.routes.values()];
+  const active = routes.filter((r) => !['done', 'failed'].includes(r.state)).length;
+  $('#nav-rec-count').hidden = active === 0;
+  $('#nav-rec-count').textContent = active;
+
+  if (!routes.length) { mount.innerHTML = ''; return; }
+  const anyActive = routes.some((r) => ['recording', 'starting'].includes(r.state));
+  mount.innerHTML = `
+    <div class="routes-head">
+      <span class="rec-dot" ${anyActive ? '' : 'style="animation:none;background:var(--text-faint);"'}></span>
+      <h3>录制任务（${routes.length}）</h3>
+      <span class="spacer" style="flex:1;"></span>
+      <button class="btn-sm btn-rec" id="btn-stop-all" ${anyActive ? '' : 'disabled'}>全部停止</button>
+    </div>
+    <div class="routes-grid">${routes.map(routeCard).join('')}</div>`;
+
+  $('#btn-stop-all').addEventListener('click', async () => {
+    try { await api.stopAll(); } catch (e) { toast('err', `全部停止失败：${e}`); }
+  });
+  $$('[data-stop]', mount).forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    try { await api.stopRoute(b.dataset.stop); } catch (e) { toast('err', `停止失败：${e}`); b.disabled = false; }
+  }));
+  $$('[data-dismiss]', mount).forEach((b) => b.addEventListener('click', () => {
+    state.routes.delete(b.dataset.dismiss);
+    renderRoutes();
+  }));
+}
+
+function routeCard(r) {
+  const [stateLabel, tone] = STATE_LABEL[r.state] || [r.state, ''];
+  const running = ['starting', 'recording'].includes(r.state);
+  const cls = ['error', 'failed'].includes(r.state) ? 'error' : r.state === 'done' ? 'done' : r.state === 'recording' ? 'recording' : '';
+  const timer = r.state === 'done' && r.finishedAt
+    ? `<span class="route-timer small">时长 ${fmtTime(r.finishedAt - r.startedAt)}</span>`
+    : r.state === 'failed'
+    ? `<span class="route-timer small muted">已停止</span>`
+    : `<span class="route-timer" data-timer="${r.id}">${fmtTime(Date.now() - r.startedAt)}</span>`;
+
+  let bodyHtml = '';
+  if (running) {
+    // route_level 暂无数据源（M9-B §8-1）：真实模式下录制 3s 无电平事件则如实标注
+    bodyHtml = r.levelNote
+      ? '<div class="muted" style="font-size:12.5px;">电平读数待管线接入，录制本身不受影响。</div>'
+      : r.trackLabels.map((l, i) => `
+      <div class="meter-row">
+        <span class="lbl" title="${esc(l)}">${esc(l)}</span>
+        <span class="meter"><i data-meter="${r.id}:${i}"></i></span>
+      </div>`).join('');
+  } else if (r.state === 'finalizing') {
+    bodyHtml = `
+      <div class="muted" style="font-size:12.5px;">正在后台合并分段并校验，可继续进行其它操作。</div>
+      <div class="progress"><i style="width:${Math.round((r.progress || 0) * 100)}%"></i></div>`;
+  } else if (r.state === 'stopping') {
+    bodyHtml = '<div class="muted" style="font-size:12.5px;">已请求停止，正在后台收尾（合并分段并校验）…</div>';
+  } else if (r.state === 'done') {
+    bodyHtml = (r.paths || [r.path]).filter(Boolean).map((p) => `<div class="route-path">${esc(p)}</div>`).join('');
+  }
+  const errHtml = r.error ? `<div class="route-err">${esc(r.error.code)}：${esc(r.error.message)}</div>` : '';
+
+  return `
+    <div class="route-card ${cls}">
+      <div class="route-head">
+        <span class="icon">${r.icon}</span>
+        <span class="name" title="${esc(r.label)}">${esc(r.label)}</span>
+        <span class="badge ${tone}">${r.state === 'recording' ? '<span class="rec-dot"></span>' : ''}${stateLabel}</span>
+      </div>
+      ${timer}
+      ${bodyHtml}
+      ${errHtml}
+      <div class="route-foot">
+        <span class="spacer"></span>
+        ${running ? `<button class="btn-sm btn-rec" data-stop="${r.id}">停止</button>` : ''}
+        ${['done', 'failed'].includes(r.state) ? `<button class="btn-sm btn-ghost" data-dismiss="${r.id}">移除</button>` : ''}
+      </div>
+    </div>`;
+}
+
+// 计时器：500ms 步进刷新录制中卡片；真实模式下补「电平无数据源」标注（M9-B §8-1）
+setInterval(() => {
+  for (const r of state.routes.values()) {
+    if (!['starting', 'recording'].includes(r.state)) continue;
+    const el = $(`[data-timer="${r.id}"]`);
+    if (el) el.textContent = fmtTime(Date.now() - r.startedAt);
+    if (!isMock && !r.levelSeen && !r.levelNote && Date.now() - r.startedAt > 3000) {
+      r.levelNote = true;
+      renderRoutes();
+    }
+  }
+}, 500);
+
+// ---------------------------------------------------------------------------
+// 事件（Channel）
+// ---------------------------------------------------------------------------
+subscribeEvents((evt) => {
+  switch (evt.event) {
+    case '_snapshot': {
+      // subscribe 返回的状态快照（REQ-31 UI 重绑）：重建仍在活动的路由卡片与恢复列表。
+      // 快照不含目标名/音轨标签（RouteStateOut 仅 id/state/final_path），重建卡片以 id 为名。
+      const snap = evt.snapshot || {};
+      for (const rs of snap.routes || []) {
+        if (!state.routes.has(rs.id)) {
+          registerRoute(rs.id, { kind: 'video', label: rs.id, icon: ICONS.window, trackLabels: [] });
+        }
+        applyRouteState(state.routes.get(rs.id), rs.state, rs.final_path);
+      }
+      if (Array.isArray(snap.recovery)) {
+        state.recovery = snap.recovery;
+        renderRecovery();
+      }
+      renderRoutes();
+      break;
+    }
+    case 'route_state': {
+      const r = state.routes.get(evt.id);
+      if (!r) { pendingStates.set(evt.id, evt); return; }
+      applyRouteState(r, evt.state, evt.final_path);
+      renderRoutes();
+      break;
+    }
+    case 'route_level': {
+      // track 为 "a0"/"a1"… 字符串（M9-B §3.3）；mock 用数字下标，两种都兼容
+      const ti = typeof evt.track === 'number' ? evt.track : Number(String(evt.track).replace(/\D/g, '')) || 0;
+      const r = state.routes.get(evt.id);
+      if (r) r.levelSeen = true;
+      const bar = $(`[data-meter="${evt.id}:${ti}"]`);
+      if (bar) bar.style.width = `${Math.round(Math.min(1, evt.rms) * 100)}%`;
+      break;
+    }
+    case 'route_error': {
+      const r = state.routes.get(evt.id);
+      if (!r) return;
+      r.error = { code: evt.code, message: evt.message };
+      // route_error 为终态事件（M9-B §3.3）；后续若仍有 route_finalized（保留内容的
+      // 优雅停止）则以 finalize 为准覆盖状态，错误框保留展示。
+      if (evt.severity === 'error' && ['starting', 'recording'].includes(r.state)) {
+        r.state = 'failed';
+        r.finishedAt = Date.now();
+      }
+      renderRoutes();
+      toast(evt.severity === 'error' ? 'err' : 'warn', `${r.label}：${evt.message}`);
+      break;
+    }
+    case 'route_finalized': {
+      const r = state.routes.get(evt.id);
+      if (r) { r.path = evt.path; r.paths = evt.paths; r.state = 'done'; r.finishedAt = Date.now(); }
+      toast('ok', `${r ? r.label : '录制'}已就绪`, evt.path);
+      renderRoutes();
+      break;
+    }
+    case 'recovery_found':
+      loadRecovery();
+      break;
+    case 'merge_progress': {
+      // 仅 mock 会发（后端 sr-merge 同步 API 无进度钩子，M9-B §8-3）；
+      // 收到事件则从不定态进度条切换为确定进度。
+      state.merge.progress = evt.progress;
+      const wrap = $('#merge-progress .progress');
+      if (wrap) {
+        wrap.classList.remove('indet');
+        wrap.firstElementChild.style.width = `${Math.round(evt.progress * 100)}%`;
+      }
+      break;
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 截图视图
+// ---------------------------------------------------------------------------
+function renderScreenshotView() {
+  renderShotLists();
+  renderShotHistory();
+}
+
+function renderShotLists() {
+  const mon = $('#shot-monitors');
+  const win = $('#shot-windows');
+  if (!mon || !win) return;
+  mon.innerHTML = state.monitors.length
+    ? state.monitors.map((m) => `
+      <div class="shot-row">
+        <span class="main"><span class="name">${esc(m.name)}${m.primary ? '（主）' : ''}</span>
+        <span class="meta" style="display:block;">${m.width}×${m.height}</span></span>
+        <button class="btn-sm" data-shot-monitor="${m.index}">截图</button>
+      </div>`).join('')
+    : `<div class="empty">${ICONS.inbox}<br>${state.targetsLoading ? '加载中…' : '未发现显示器（先在录制页刷新）'}</div>`;
+  win.innerHTML = state.windows.length
+    ? state.windows.map((w) => `
+      <div class="shot-row">
+        <span class="main"><span class="name">${esc(w.title)}</span>
+        <span class="meta" style="display:block;">${esc(w.app_name)} · ${esc(w.process_name)}</span></span>
+        <button class="btn-sm" data-shot-window="${w.hwnd}">截图</button>
+      </div>`).join('')
+    : `<div class="empty">${ICONS.inbox}<br>${state.targetsLoading ? '加载中…' : '未发现窗口（先在录制页刷新）'}</div>`;
+
+  $$('[data-shot-monitor]').forEach((b) => b.addEventListener('click', () => doScreenshot({ kind: 'monitor', index: Number(b.dataset.shotMonitor) }, b)));
+  $$('[data-shot-window]').forEach((b) => b.addEventListener('click', () => doScreenshot({ kind: 'window', hwnd: Number(b.dataset.shotWindow) }, b)));
+}
+
+async function doScreenshot(req, btn) {
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>'; }
+  try {
+    const { path } = await api.takeScreenshot(req);
+    state.shotHistory.unshift({ path, when: Date.now(), kind: req.kind });
+    toast('ok', '截图已保存', path);
+    renderShotHistory();
+  } catch (e) {
+    toast('err', `截图失败：${e}`);
+  }
+  if (btn) { btn.disabled = false; btn.textContent = '截图'; }
+}
+
+function renderShotHistory() {
+  const el = $('#shot-history');
+  el.innerHTML = state.shotHistory.length
+    ? state.shotHistory.map((h) => `
+      <div class="history-item">
+        <span class="when">${fmtWhen(h.when)}</span>
+        <span class="path" title="${esc(h.path)}">${esc(h.path)}</span>
+      </div>`).join('')
+    : `<div class="empty">${ICONS.inbox}<br>本次会话还没有截图</div>`;
+}
+
+// 区域框选（REQ-8）：交互由后端全屏覆盖层窗口完成（label=region-overlay，
+// 加载 ui/region.html，负责选区绘制与 client→物理坐标换算）；此处只打开覆盖层。
+$('#btn-region-shot').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    await api.openRegionOverlay();
+  } catch (err) {
+    toast('err', `无法打开区域截图覆盖层：${err}`);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 合并视图
+// ---------------------------------------------------------------------------
+async function renderMerge() {
+  const list = $('#merge-list');
+  list.innerHTML = '<div class="skel"></div>'.repeat(3);
+  try { state.recentFiles = await api.recentRecordings(); } catch { state.recentFiles = []; }
+  if (!$('#merge-out').value && state.settings) {
+    $('#merge-out').value = `${state.settings.output_dir}\\merged_${fileStamp()}.mkv`;
+  }
+  renderMergeList();
+}
+
+function renderMergeList() {
+  const list = $('#merge-list');
+  const items = [
+    ...state.recentFiles.filter((f) => f.kind !== 'shot').map((f) => ({ path: f.path, meta: `${f.kind === 'audio' ? '音频' : '视频'} · ${fmtWhen(f.when)}` })),
+    ...state.merge.extra.map((p) => ({ path: p, meta: '手动添加' })),
+  ];
+  list.innerHTML = items.length
+    ? items.map((f, i) => {
+      const order = [...state.merge.picked].indexOf(f.path);
+      return `
+        <div class="history-item">
+          <input type="checkbox" data-merge-pick="${esc(f.path)}" ${state.merge.picked.has(f.path) ? 'checked' : ''} />
+          ${order >= 0 ? `<span class="merge-order">${order + 1}</span>` : ''}
+          <span class="path" title="${esc(f.path)}">${esc(f.path)}</span>
+          <span class="when">${f.meta}</span>
+        </div>`;
+    }).join('')
+    : `<div class="empty">${ICONS.inbox}<br>暂无可合并的录制文件；可在上方手动添加路径</div>`;
+
+  $$('[data-merge-pick]', list).forEach((cb) => cb.addEventListener('change', () => {
+    cb.checked ? state.merge.picked.add(cb.dataset.mergePick) : state.merge.picked.delete(cb.dataset.mergePick);
+    renderMergeList();
+  }));
+  $('#btn-merge').disabled = state.merge.picked.size < 2 || state.merge.running;
+}
+
+$('#merge-add-btn').addEventListener('click', () => {
+  const v = $('#merge-add-input').value.trim();
+  if (!v) return;
+  state.merge.extra.push(v);
+  state.merge.picked.add(v);
+  $('#merge-add-input').value = '';
+  renderMergeList();
+});
+
+$('#btn-merge').addEventListener('click', async () => {
+  const paths = [...state.merge.picked];
+  const out = $('#merge-out').value.trim();
+  if (!out) { toast('warn', '请填写输出路径'); return; }
+  if (paths.includes(out)) { toast('warn', '输出路径不能与输入文件相同'); return; }
+  state.merge.running = true;
+  state.merge.progress = 0;
+  $('#btn-merge').disabled = true;
+  $('#merge-progress').innerHTML = `
+    <div class="muted" style="font-size:12.5px;margin-bottom:6px;">合并中（流拷贝，不重编码）…</div>
+    <div class="progress indet"><i></i></div>`;
+  try {
+    const res = await api.mergeRecordings(paths, out);
+    $('#merge-progress').innerHTML = `<div class="notice info" style="margin:0;">合并完成<span class="mono" style="display:block;margin-top:4px;word-break:break-all;">${esc(res.out)}</span></div>`;
+    state.merge.picked.clear();
+    toast('ok', '合并完成', res.out);
+  } catch (e) {
+    $('#merge-progress').innerHTML = `<div class="notice err" style="margin:0;">合并失败：${esc(e)}（输入文件已保留）</div>`;
+    toast('err', `合并失败：${e}`);
+  }
+  state.merge.running = false;
+  renderMergeList();
+});
+
+// ---------------------------------------------------------------------------
+// 设置视图
+// ---------------------------------------------------------------------------
+function renderSettings() {
+  const s = state.settings;
+  const panel = $('#settings-panel');
+  if (!s) { panel.innerHTML = '<div class="skel"></div>'.repeat(4); return; }
+  const encs = state.caps?.encoders || [];
+  panel.innerHTML = `
+    <div class="field">
+      <label>输出目录</label>
+      <input type="text" id="set-outdir" value="${esc(s.output_dir)}" />
+      <div class="hint">录制分段临时目录位于输出卷内（&lt;输出目录&gt;\\.screenrec_tmp），保证收尾同卷提交。</div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>默认帧率</label>
+        <select id="set-fps">
+          <option value="30" ${s.fps === 30 ? 'selected' : ''}>30 fps</option>
+          <option value="60" ${s.fps === 60 ? 'selected' : ''}>60 fps</option>
+        </select>
+      </div>
+      <div class="field"><label>分段时长（秒）</label>
+        <input type="number" id="set-seg" min="1" max="60" value="${s.segment_secs}" />
+        <div class="hint">崩溃时最多丢失一个分段的时长。</div>
+      </div>
+    </div>
+    <div class="field">
+      <label>默认音轨模式</label>
+      <select id="set-audiomode">
+        <option value="isolated" ${s.default_audio_mode === 'isolated' ? 'selected' : ''}>隔离（仅目标应用）</option>
+        <option value="all_tracks" ${s.default_audio_mode === 'all_tracks' ? 'selected' : ''}>全音轨（所有来源独立成轨）</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>麦克风设备</label>
+      <select id="set-mic">
+        <option value="">不启用</option>
+        ${state.audioDevices.map((d) => `<option value="${esc(d.id)}" ${s.mic_device === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}
+      </select>
+      ${state.audioDevices.length ? '' : '<div class="hint">未检测到麦克风设备或权限未允许。</div>'}
+    </div>
+    <div class="field">
+      <label>编码器</label>
+      <select id="set-enc">
+        <option value="auto" ${s.encoder === 'auto' ? 'selected' : ''}>自动（启动前探测：nvenc → qsv → amf → h264_mf）</option>
+        ${encs.map((e) => `<option value="${esc(e.name)}" ${s.encoder === e.name ? 'selected' : ''} ${e.available ? '' : 'disabled'}>${esc(e.name)}${e.available ? '' : '（本机不可用）'}</option>`).join('')}
+      </select>
+    </div>
+    <label class="check-row"><input type="checkbox" id="set-cursor" ${s.cursor ? 'checked' : ''} /><span>默认捕获光标</span></label>
+    <label class="check-row"><input type="checkbox" id="set-keep-segments" ${s.keep_segments ? 'checked' : ''} /><span>保留原始分段（调试/排查用）</span></label>
+    <div class="hint" style="margin:-6px 0 0 26px;">默认关闭：成品验证成功后自动清理 .screenrec_tmp 会话目录；录制失败时始终保留原段。</div>
+    <div style="margin-top:18px;display:flex;gap:10px;align-items:center;">
+      <button class="btn-primary" id="btn-save-settings">保存设置</button>
+      <span id="settings-msg" class="muted" style="font-size:12.5px;"></span>
+    </div>`;
+
+  $('#btn-save-settings').addEventListener('click', async () => {
+    const next = {
+      output_dir: $('#set-outdir').value.trim(),
+      fps: Number($('#set-fps').value),
+      cursor: $('#set-cursor').checked,
+      default_audio_mode: $('#set-audiomode').value,
+      mic_device: $('#set-mic').value || null,
+      encoder: $('#set-enc').value,
+      segment_secs: Math.max(1, Number($('#set-seg').value) || 5),
+      keep_segments: $('#set-keep-segments').checked,
+    };
+    const msg = $('#settings-msg');
+    try {
+      await api.setSettings(next);
+      state.settings = next;
+      applySettingsDefaults();
+      msg.textContent = '已保存';
+      toast('ok', '设置已保存');
+    } catch (e) {
+      msg.textContent = `保存失败：${e}`;
+      toast('err', `保存失败：${e}`);
+    }
+  });
+}
+
+function applySettingsDefaults() {
+  const s = state.settings;
+  if (!s) return;
+  state.cfg.fps = s.fps;
+  state.cfg.cursor = s.cursor;
+  state.cfg.audioMode = s.default_audio_mode;
+  if (!state.cfg.outputDir) state.cfg.outputDir = s.output_dir;
+  if (!state.audioOnly.outputDir) state.audioOnly.outputDir = s.output_dir;
+}
+
+// ---------------------------------------------------------------------------
+// 恢复横幅（AC-10 / REQ-22）
+// ---------------------------------------------------------------------------
+async function loadRecovery() {
+  try {
+    const { sessions } = await api.recoverSessions();
+    state.recovery = sessions;
+  } catch (e) {
+    toast('err', `恢复扫描失败：${e}`);
+    state.recovery = [];
+  }
+  renderRecovery();
+}
+
+function renderRecovery() {
+  const mount = $('#recovery-mount');
+  mount.innerHTML = state.recovery.map((s) => {
+    // M9-B §8-7/8-8 规则：
+    //  - 全部路由已收尾（final_path 非空 / state=final）→ 已收尾残留，仅给「清理」
+    //  - 启动回滚空会话（manifest_ok 且无密封段无尾段）→ 仅给「清理」
+    //  - active=true → 不给「丢弃」（discard_session 无条件删目录）
+    const allFinal = s.routes.length > 0 && s.routes.every((r) => r.final_path || r.state === 'final');
+    const emptyResidue = s.manifest_ok && !(s.sealed_segments && s.sealed_segments.length) && !s.tail_segment;
+    const cleanupOnly = allFinal || emptyResidue;
+    const title = allFinal ? '历史会话（已收尾，原段保留）'
+      : emptyResidue ? '空会话残留（启动失败回滚）'
+      : '发现未收尾的录制会话';
+    const routeDesc = s.routes.map((r) => `${esc(r.name)}（${r.segments} 段）`).join('、') || '无路由记录';
+    const meta = cleanupOnly
+      ? `会话 ${esc(s.session_id)} · 开始于 ${fmtWhen(s.created_at)} · ${s.dir ? esc(s.dir) : ''}`
+      : `会话 ${esc(s.session_id)} · ${s.routes.length} 路（${routeDesc}）· 开始于 ${fmtWhen(s.created_at)} — 上次程序异常退出，已写入的分段未丢失，可收尾为成品或丢弃。`;
+    const buttons = cleanupOnly
+      ? '<button class="btn-sm" data-act="discard">清理</button>'
+      : `<button class="btn-sm btn-primary" data-act="finalize">收尾</button>
+         ${s.active ? '' : '<button class="btn-sm" data-act="discard">丢弃</button>'}`;
+    return `
+    <div class="recovery-banner" data-session="${esc(s.session_id)}">
+      <span class="spin" hidden></span>
+      <div class="grow">
+        <div class="title">${title}</div>
+        <div class="meta">${meta}</div>
+      </div>
+      ${buttons}
+    </div>`;
+  }).join('');
+
+  $$('.recovery-banner', mount).forEach((banner) => {
+    const id = banner.dataset.session;
+    const spin = $('.spin', banner);
+    $$('button', banner).forEach((btn) => btn.addEventListener('click', async () => {
+      if (btn.dataset.act === 'discard' && btn.dataset.confirm !== '1') {
+        btn.dataset.confirm = '1';
+        btn.textContent = btn.textContent === '清理' ? '确认清理？（会话目录将删除）' : '确认丢弃？（分段将删除）';
+        btn.classList.add('btn-rec');
+        return;
+      }
+      $$('button', banner).forEach((b) => (b.disabled = true));
+      spin.hidden = false;
+      try {
+        if (btn.dataset.act === 'finalize') {
+          const res = await api.finalizeSession(id);
+          const finals = res?.finals || [];
+          toast('ok', `会话收尾完成（${finals.length} 个成品）`, finals[0]?.path);
+        } else {
+          await api.discardSession(id);
+          toast('ok', '已清理该会话的残留分段');
+        }
+        state.recovery = state.recovery.filter((x) => x.session_id !== id);
+        banner.remove();
+      } catch (e) {
+        spin.hidden = true;
+        $$('button', banner).forEach((b) => (b.disabled = false));
+        toast('err', `操作失败：${e}（残留分段已保留，可重试）`);
+      }
+    }));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 键盘操作
+// ---------------------------------------------------------------------------
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    if (state.view === 'record') $('#btn-start')?.click();
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r') {
+    if (state.view === 'record') { e.preventDefault(); refreshTargets(); }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 初始化
+// ---------------------------------------------------------------------------
+async function init() {
+  $('#env-badge').textContent = isMock ? '演示数据（mock）' : '已连接后端';
+  $('#env-badge').classList.toggle('real', !isMock);
+
+  try { state.settings = await api.getSettings(); } catch (e) { toast('err', `读取设置失败：${e}`); }
+  applySettingsDefaults();
+  try { state.audioDevices = await api.listAudioDevices(); } catch { state.audioDevices = []; }
+  try {
+    state.caps = await api.probeCapabilities();
+    $('#nav-foot-os').textContent = `Windows ${state.caps.os_build}`;
+  } catch (e) {
+    state.caps = null;
+    toast('err', `环境探测失败：${e}`);
+  }
+
+  renderCaps();
+  renderLeftPanel();
+  renderConfig();
+  renderStartBar();
+  renderShotHistory();
+  loadRecovery();
+  refreshTargets();
+
+  // 录制模式切换
+  $$('#mode-tabs button').forEach((b) => b.addEventListener('click', () => {
+    state.recordMode = b.dataset.mode;
+    $$('#mode-tabs button').forEach((x) => x.classList.toggle('active', x === b));
+    renderLeftPanel();
+    renderConfig();
+    renderStartBar();
+  }));
+  $('#btn-refresh').addEventListener('click', refreshTargets);
+}
+
+init();
+})();

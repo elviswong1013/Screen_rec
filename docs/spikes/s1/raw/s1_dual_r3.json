@@ -1,0 +1,30 @@
+{
+  "label": "s1_dual_r3", "mode": "paced", "variant": "scale", "routes": 2, "seconds": 10, "fps": 30, "pipe_buf": 4194304,
+  "logical_cores": 24, "wall_s": 10.249, "system_busy_pct": 35.3, "self_cores": 0.43,
+  "routes": [
+  {
+    "route": 0, "variant": "scale", "paced": true, "frames_written": 300, "elapsed_s": 10.176, "free_run_fps": 0.00,
+    "late_max_ms": 733.32, "late_over_budget_frames": 28, "late_steady_max_ms": 0.00, "late_over_budget_steady": 0, "write_wait_steady_ms": {"avg":0.696,"p50":0.675,"p95":1.178,"max":1.549},
+    "connect_ms": 29.4, "first_write_ms": 37.2,
+    "gen_ms": {"avg":3.310,"p50":3.517,"p95":3.947,"max":4.156}, "resize_ms": {"avg":1.615,"p50":1.454,"p95":3.014,"max":4.082}, "convert_ms": {"avg":1.825,"p50":1.812,"p95":2.232,"max":2.920}, "write_wait_ms": {"avg":3.202,"p50":0.641,"p95":1.178,"max":759.598},
+    "pipe_bytes": 933120000, "pipe_MBps": 91.7,
+    "worker_thread_pct": 21.8, "ffmpeg_cores": 0.14, "ffmpeg_exit": 0,
+    "segments": [
+    {"path":"C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1out\\s1_dual_r3\\r0\\out_00000.mkv","duration":6.067,"packets":180,"codec":"h264"},
+    {"path":"C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1out\\s1_dual_r3\\r0\\out_00001.mkv","duration":4.000,"packets":120,"codec":"h264"}
+    ]
+  },
+  {
+    "route": 1, "variant": "scale", "paced": true, "frames_written": 300, "elapsed_s": 10.176, "free_run_fps": 0.00,
+    "late_max_ms": 667.48, "late_over_budget_frames": 26, "late_steady_max_ms": 0.00, "late_over_budget_steady": 0, "write_wait_steady_ms": {"avg":0.664,"p50":0.603,"p95":1.115,"max":1.784},
+    "connect_ms": 26.8, "first_write_ms": 33.8,
+    "gen_ms": {"avg":3.321,"p50":3.537,"p95":3.955,"max":4.360}, "resize_ms": {"avg":1.558,"p50":1.425,"p95":3.220,"max":3.729}, "convert_ms": {"avg":1.810,"p50":1.808,"p95":2.183,"max":2.533}, "write_wait_ms": {"avg":2.960,"p50":0.581,"p95":1.115,"max":694.853},
+    "pipe_bytes": 933120000, "pipe_MBps": 91.7,
+    "worker_thread_pct": 21.2, "ffmpeg_cores": 0.13, "ffmpeg_exit": 0,
+    "segments": [
+    {"path":"C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1out\\s1_dual_r3\\r1\\out_00000.mkv","duration":6.067,"packets":180,"codec":"h264"},
+    {"path":"C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1out\\s1_dual_r3\\r1\\out_00001.mkv","duration":4.000,"packets":120,"codec":"h264"}
+    ]
+  }
+  ]
+}

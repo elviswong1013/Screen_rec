@@ -1,0 +1,7 @@
+﻿date=2026-10-16T00:27:43.5882051+08:00
+product=Windows 10 Pro display=25H2 build=26200.9457 (10.0.26200.0)
+apploop_exe=C:\Users\elvis\Documents\From MSI\git_repository\Screen_rec\tools\spikes\s3\apploop\target\release\apploop.exe
+apploop_sha256=033F963AD8403C98B26DFCEE65A7A778B7F8392F0338851904CF75C7F09D284C
+apploop_bytes=1223680
+wasapi_crate=0.26.0
+ffmpeg=ffmpeg version N-127564-g3c92f003c7-20261015 Copyright (c) 2000-2026 the FFmpeg developers

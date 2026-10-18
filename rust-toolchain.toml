@@ -1,0 +1,4 @@
+# 工具链锁定（REQ-29）：MSRV 按 tauri 2.12.4 声明
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]

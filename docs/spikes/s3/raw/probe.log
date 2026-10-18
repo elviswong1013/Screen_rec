@@ -1,0 +1,2 @@
+﻿COM: initialize_mta() hr=0x00000000 ok=true
+ENDPOINT: render: 'LS24A600N' 48000Hz 2ch int16bits/16bits blockalign=4 | capture: error Windows(Error { code: HRESULT(0x80070490), message: "鍏冪礌鎵句笉鍒般€? })

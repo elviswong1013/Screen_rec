@@ -1,0 +1,26 @@
+﻿CMD: ffmpeg -hide_banner -nostdin -f lavfi -i testsrc2=size=1920x1080:rate=30 -t 10 -g 60 -c:v h264_amf -y C:\Users\elvis\AppData\Local\Temp\opencode\s2out\single_h264_amf.mkv
+START: 2026-10-15T23:27:46.7045742+08:00
+Input #0, lavfi, from 'testsrc2=size=1920x1080:rate=30':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, yuv420p, 1920x1080 [SAR 1:1 DAR 16:9], 30 fps, 30 tbr, 30 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> h264 (h264_amf))
+[AMF @ 000001abae76dd80] DLL amfrt64.dll failed to open
+[h264_amf @ 000001abae7d98c0] Failed to create  hardware device context (AMF) : Unknown error occurred
+[vost#0:0/h264_amf @ 000001abb0b00140] [enc:h264_amf @ 000001abae7550c0] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.
+[vf#0:0 @ 000001abb0b00740] Error sending frames to consumers: Unknown error occurred
+[vf#0:0 @ 000001abb0b00740] Task finished with error: Unknown error occurred
+[vf#0:0 @ 000001abb0b00740] Terminating thread with error: Unknown error occurred
+[vost#0:0/h264_amf @ 000001abb0b00140] [enc:h264_amf @ 000001abae7550c0] Could not open encoder before EOF
+[vost#0:0/h264_amf @ 000001abb0b00140] Task finished with error: Invalid argument
+[vost#0:0/h264_amf @ 000001abb0b00140] Terminating thread with error: Invalid argument
+[out#0/matroska @ 000001abae772780] Nothing was written into output file, because at least one of its streams received no packets.
+frame=    0 fps=0.0 q=0.0 Lsize=       0KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:00.05    
+Conversion failed!
+RESULT: tag=single_h264_amf enc=h264_amf exit= elapsed_s=0.12 out_bytes=0 speed= first_error=[AMF @ 000001abae76dd80] DLL amfrt64.dll failed to open
+== ffprobe C:\Users\elvis\AppData\Local\Temp\opencode\s2out\single_h264_amf.mkv ==
+duration=[matroska,webm @ 0000027c0e8b2340] EBML header parsing failed C:\Users\elvis\AppData\Local\Temp\opencode\s2out\single_h264_amf.mkv: Invalid data found when processing input
+stream=[matroska,webm @ 0000023b433f0b40] EBML header parsing failed C:\Users\elvis\AppData\Local\Temp\opencode\s2out\single_h264_amf.mkv: Invalid data found when processing input
+keyframe_count=0
+keyframes=
+max_keyframe_gap_s=0

@@ -1,0 +1,11 @@
+﻿BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\e_tree_exclude.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=384000 duration_s=8.000000
+BASIC peak_dbfs=-21.07 rms_dbfs=-24.10
+FFT nfft=32768 bin_hz=1.464844 frames=20 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=445.312 db_fs=-182.28 db_rel_ref=-160.84
+TONE freq=880.0 peak_at=880.371 db_fs=-21.44 db_rel_ref=0.00
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-205.20 median_db_rel_ref=-183.77
+GLOBAL_PEAK freq=880.371 db_fs=-21.44
+LEAK freq=440.0 rel_db=-160.84 limit_db=-40.00 ok
+VERDICT ref=880.0 threshold_db=-40.00 PASS
+CSV path=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\e_tree_exclude.csv

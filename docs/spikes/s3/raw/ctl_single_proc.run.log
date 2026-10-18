@@ -1,0 +1,25 @@
+[    0.000s] CMD: C:\Users\elvis\Documents\From MSI\git_repository\Screen_rec\tools\spikes\s3\apploop\target\release\apploop.exe record --pid 60292 --out C:\Users\elvis\AppData\Local\Temp\opencode\s3run\ctl_single_proc.wav --seconds 4 --log C:\Users\elvis\Documents\From MSI\git_repository\Screen_rec\docs\spikes\s3\raw\ctl_single_proc.run.log
+[    0.001s] COM: initialize_mta() hr=0x00000000 ok=true (RPC_E_CHANGED_MODE=0x80010106 means the thread already had another apartment)
+[    0.004s] ENDPOINT: render: 'LS24A600N' 48000Hz 2ch int16bits/16bits blockalign=4 | capture: error Windows(Error { code: HRESULT(0x80070490), message: "元素找不到。" })
+[    0.005s] ACTIVATE: ok pid=60292 mode=INCLUDE_TARGET_PROCESS_TREE in 1.1 ms
+[    0.005s] GETMIXFORMAT: error (expected for process loopback): Windows(Error { code: HRESULT(0x80004001), message: "未執行" })
+[    0.006s] INITIALIZE: ok fmt=48000Hz 2ch float32bits/32bits blockalign=8 mode=EventsShared autoconvert=true buffer_duration_hns=0
+[    0.006s] START: recording 4.000s -> C:\Users\elvis\AppData\Local\Temp\opencode\s3run\ctl_single_proc.wav
+[    0.023s] PKT#1 frames=480 index=0 ts=2697347279774 flags=silent:false disc:false tserr:false t=0.017s
+[    0.033s] PKT#2 frames=480 index=0 ts=2697347379774 flags=silent:false disc:false tserr:false t=0.027s
+[    0.043s] PKT#3 frames=480 index=0 ts=2697347479774 flags=silent:false disc:false tserr:false t=0.037s
+[    0.053s] PKT#4 frames=480 index=0 ts=2697347579774 flags=silent:false disc:false tserr:false t=0.047s
+[    0.064s] PKT#5 frames=480 index=0 ts=2697347679774 flags=silent:false disc:false tserr:false t=0.057s
+[    1.014s] HEARTBEAT t=1.0s packets=100 frames=48000 silent=0 gaps=0 empty_reads=100
+[    2.014s] HEARTBEAT t=2.0s packets=200 frames=96000 silent=0 gaps=0 empty_reads=200
+[    3.014s] HEARTBEAT t=3.0s packets=300 frames=144000 silent=0 gaps=0 empty_reads=300
+[    4.015s] WAV: 1536068 bytes
+[    4.016s] RESULT pid=60292 out=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\ctl_single_proc.wav
+[    4.016s] RESULT seconds=4 mode=include_tree autoconvert=true pad_silence=false format=f32/2ch/48000Hz
+[    4.016s] RESULT packets=400 frames=192000 written_s=4.000000 padded_frames=0 padded_s=0.000000 wall_s=4.008
+[    4.016s] RESULT flags silent_packets=0 data_discontinuity_packets=0 timestamp_error_packets=0 empty_reads=400
+[    4.016s] RESULT first_packet_s=Some(0.0171199) last_packet_s=Some(4.0075065) ts_span_s=3.990000 ts_vs_frames_ratio=0.997500
+[    4.016s] RESULT device_position_gap_events=0 device_position_gap_frames=0 device_position_rewind_events=399 first_gap=None (note: process loopback keeps device position at 0 per packet; use timestamps)
+[    4.016s] RESULT ts_step_max_abs_ms=0.000 ts_step_events_gt5ms=0
+[    4.016s] RESULT packet_frames_min=Some(480) max=Some(480)
+[    4.016s] done

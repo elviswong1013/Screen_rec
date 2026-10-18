@@ -1,0 +1,10 @@
+﻿BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\ctl_single_devmix.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=192480 duration_s=4.010000
+BASIC peak_dbfs=-26.48 rms_dbfs=-29.49
+FFT nfft=32768 bin_hz=1.464844 frames=9 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=439.453 db_fs=-27.27 db_rel_ref=0.00
+TONE freq=880.0 peak_at=874.512 db_fs=-185.43 db_rel_ref=-158.15
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-203.74 median_db_rel_ref=-176.47
+GLOBAL_PEAK freq=439.453 db_fs=-27.27
+LEAK freq=880.0 rel_db=-158.15 limit_db=-40.00 ok
+VERDICT ref=440.0 threshold_db=-40.00 PASS

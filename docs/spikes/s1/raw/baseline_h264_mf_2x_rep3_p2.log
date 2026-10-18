@@ -1,0 +1,22 @@
+﻿CMD: ffmpeg -hide_banner -nostdin -f lavfi -i testsrc2=size=1920x1080:rate=30 -t 10 -g 60 -c:v h264_mf -f segment -segment_time 5 -reset_timestamps 1 -segment_format matroska -y C:\Users\elvis\AppData\Local\Temp\opencode\s1out\baseline\baseline_h264_mf_2x_rep3_p2\out_%05d.mkv
+START: 2026-10-16T00:16:40.1241944+08:00
+Input #0, lavfi, from 'testsrc2=size=1920x1080:rate=30':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, yuv420p, 1920x1080 [SAR 1:1 DAR 16:9], 30 fps, 30 tbr, 30 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> h264 (h264_mf))
+[h264_mf @ 000001afdc690b80] MFT name: 'H264 Encoder MFT'
+[segment @ 000001afdc33fb80] Opening 'C:\Users\elvis\AppData\Local\Temp\opencode\s1out\baseline\baseline_h264_mf_2x_rep3_p2\out_00000.mkv' for writing
+Output #0, segment, to 'C:\Users\elvis\AppData\Local\Temp\opencode\s1out\baseline\baseline_h264_mf_2x_rep3_p2\out_%05d.mkv':
+  Metadata:
+    encoder         : Lavf63.10.100
+  Stream #0:0: Video: h264, yuv420p(progressive), 1920x1080 [SAR 1:1 DAR 16:9], q=2-31, 200 kb/s, 30 fps, 1k tbn
+    Metadata:
+      encoder         : Lavc63.20.100 h264_mf
+frame=  113 fps=0.0 q=-0.0 size=N/A time=00:00:03.76 bitrate=N/A speed=7.46x elapsed=0:00:00.50    
+[segment @ 000001afdc33fb80] Opening 'C:\Users\elvis\AppData\Local\Temp\opencode\s1out\baseline\baseline_h264_mf_2x_rep3_p2\out_00001.mkv' for writing
+frame=  268 fps=263 q=-0.0 size=N/A time=00:00:08.93 bitrate=N/A speed=8.75x elapsed=0:00:01.02    
+[out#0/segment @ 000001afda3f28c0] video:3476KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=  300 fps=279 q=-0.0 Lsize=N/A time=00:00:10.00 bitrate=N/A speed= 9.3x elapsed=0:00:01.07    
+RESULT: tag=baseline_h264_mf_2x_rep3_p2 exit=0 elapsed_s=1.4 speed=9.3
+PROBE: segs=2 dur_sum=10 packets_sum=300

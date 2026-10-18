@@ -1,0 +1,7 @@
+﻿CMD: pipefault --case suspend-resume --label s1b_suspend-resume_rep2 --seconds 10 --suspend-at 4 --resume-after 3
+START: 2026-10-16T00:54:10.1066254+08:00
+pipefault case=suspend-resume label=s1b_suspend-resume_rep2 seconds=10 fps=30 pipe_buf=4194304
+JSON: C:\Users\elvis\Documents\From MSI\git_repository\Screen_rec\docs\spikes\s1b\raw\s1b_suspend-resume_rep2.json
+DONE case=suspend-resume
+RESULT: label=s1b_suspend-resume_rep2 exit=0 elapsed_s=10.37
+PROBE: frames_written=300 packets_sum=300 ffmpeg_exit=0 write_error=

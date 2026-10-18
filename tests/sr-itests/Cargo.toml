@@ -1,0 +1,40 @@
+[package]
+name = "sr-itests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Screen_rec L2 集成测试与半自动同步分析容器（specs/001-screen-recorder.md §3.2/§4）"
+
+[dependencies]
+# 被测产品 crate（M1-B 红测试的接口契约目标；规格 §3.2）
+sr-core = { path = "../../crates/sr-core" }
+sr-enum = { path = "../../crates/sr-enum" }
+# M2 红测试的接口契约目标（截图，REQ-5..8；规格 §3.2/§3.3）
+sr-shot = { path = "../../crates/sr-shot" }
+# M3 红测试的接口契约目标（单路视频管线，REQ-9..21 部分；规格 §3.2/§3.3）
+sr-pipeline = { path = "../../crates/sr-pipeline" }
+# M4 红测试的接口契约目标（音频隔离，REQ-14/17/18/26；规格 §3.2）
+sr-audio = { path = "../../crates/sr-audio" }
+# M7 红测试的接口契约目标（合并，REQ-23；规格 §3.2 模块表：sr-merge=合并（异构多轨））
+sr-merge = { path = "../../crates/sr-merge" }
+
+# L2 FFT 内容级判定（规格 §4 验证手法；S3 spike 分析器同库，docs/spikes/s3 §2）
+rustfft = "6.4.1"
+
+# 同步 L2 的参考音源：测试进程内 WASAPI 渲染（视频条与音频同一内容时钟；
+# 规避外部播放器在本机环境下的视频呈现漂移；仅测试使用）
+wasapi = "0.26"
+
+# 测试侧交叉验证用 Win32 直连（与规格 §1 锁定的 `windows 0.62` 同版本；
+# 仅测试使用，非产品依赖；Win32_System_Diagnostics_ToolHelp 为 M3 强杀用例
+# 的 sidecar 子进程发现所需）
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }

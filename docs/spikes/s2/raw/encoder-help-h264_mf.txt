@@ -1,0 +1,27 @@
+﻿Encoder h264_mf [H264 via MediaFoundation]:
+    General capabilities: dr1 delay hybrid 
+    Threading capabilities: none
+    Supported pixel formats: nv12 yuv420p d3d11
+h264_mf AVOptions:
+  -rate_control      <int>        E..V....... Select rate control mode (from -1 to INT_MAX) (default default)
+     default         -1           E..V....... Default mode
+     cbr             0            E..V....... CBR mode
+     pc_vbr          1            E..V....... Peak constrained VBR mode
+     u_vbr           2            E..V....... Unconstrained VBR mode
+     quality         3            E..V....... Quality mode
+     ld_vbr          4            E..V....... Low delay VBR mode
+     g_vbr           5            E..V....... Global VBR mode
+     gld_vbr         6            E..V....... Global low delay VBR mode
+  -scenario          <int>        E..V....... Select usage scenario (from -1 to INT_MAX) (default default)
+     default         -1           E..V....... Default scenario
+     display_remoting 1            E..V....... Display remoting
+     video_conference 2            E..V....... Video conference
+     archive         3            E..V....... Archive
+     live_streaming  4            E..V....... Live streaming
+     camera_record   5            E..V....... Camera record
+     display_remoting_with_feature_map 6            E..V....... Display remoting with feature map
+  -quality           <int>        E..V....... Quality (from -1 to 100) (default -1)
+  -hw_encoding       <boolean>    E..V....... Force hardware encoding (default false)
+
+
+Exiting with exit code 0

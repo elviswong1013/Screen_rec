@@ -1,0 +1,2 @@
+﻿spawn_pid=73296 start_wall=2026-10-16T00:05:24.9012453+08:00
+kill_wall=2026-10-16T00:05:37.9060412+08:00 kill_cmd='taskkill /F /PID 73296' taskkill_output=SUCCESS: The process with PID 73296 has been terminated. reap_ms=59 exit_code=1

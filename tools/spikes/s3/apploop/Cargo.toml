@@ -1,0 +1,20 @@
+[package]
+name = "apploop"
+version = "0.1.0"
+edition = "2021"
+description = "S3 spike: WASAPI per-process application loopback recorder + FFT checker (spike tooling, NOT production code)"
+license = "MIT"
+
+[[bin]]
+name = "apploop"
+path = "src/main.rs"
+
+[dependencies]
+wasapi = "0.26.0"
+hound = "3.5"
+rustfft = "6"
+anyhow = "1"
+
+# 独立 spike crate：声明自有 workspace，不并入仓库根 workspace
+# （根 members 尚未就绪时也能独立构建；Spike 工具，非生产代码）
+[workspace]

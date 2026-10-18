@@ -1,0 +1,39 @@
+[package]
+name = "sr-shot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Screen_rec 截图（显示器/窗口/区域 + 跨屏拼合 + PNG，REQ-5..8）"
+
+[dependencies]
+# PNG 编码（RGBA8；仓库锁定依赖 image 0.25 的同版本传递链，Cargo.lock 已含 0.18.1）
+png = "0.18"
+
+# 已批准栈（specs/001-screen-recorder.md §1）：windows 0.62 直调 WGC（研究报告
+# feasibility-2026-10-15.md §4：截图 WGC 单帧为首选，PrintWindow(PW_RENDERFULLCONTENT)
+# 为窗口备选）。features 按用到的命名空间最小化：
+# - Graphics_Capture/WinRT 互操作：WGC 单帧抓取（显示器/窗口）
+# - Win32_Graphics_Direct3D(+11)/Dxgi：D3D11 设备与纹理回读
+# - Win32_UI_HiDpi：worker 线程 per-monitor-v2 上下文（REQ-6 物理像素语义）
+# - Win32_Storage_Xps：PrintWindow（windows-rs 0.62 将该 user32 API 归于 Xps 命名空间）
+windows = { version = "0.62", features = [
+    "Foundation",
+    "Graphics",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_Xps",
+    "Win32_System_Com",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }

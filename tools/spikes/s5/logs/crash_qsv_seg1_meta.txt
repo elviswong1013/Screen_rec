@@ -1,0 +1,2 @@
+﻿spawn_pid=122232 start_wall=2026-10-16T00:12:02.4729592+08:00
+kill_wall=2026-10-16T00:12:15.4900170+08:00 kill_cmd='taskkill /F /PID 122232' taskkill_output=SUCCESS: The process with PID 122232 has been terminated. reap_ms=52 exit_code=1

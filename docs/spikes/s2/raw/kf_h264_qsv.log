@@ -1,0 +1,27 @@
+﻿CMD: ffmpeg -hide_banner -nostdin -f lavfi -i testsrc2=size=1920x1080:rate=30 -t 10 -g 60 -force_key_frames expr:gte(t,n_forced*5) -c:v h264_qsv -y C:\Users\elvis\AppData\Local\Temp\opencode\s2out\kf_h264_qsv.mkv
+START: 2026-10-15T23:29:33.4957494+08:00
+Input #0, lavfi, from 'testsrc2=size=1920x1080:rate=30':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, yuv420p, 1920x1080 [SAR 1:1 DAR 16:9], 30 fps, 30 tbr, 30 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> h264 (h264_qsv))
+[h264_qsv @ 000001c793070b80] Using the constant quantization parameter (CQP) by default. Please use the global_quality option and other options for a quality-based mode or the b option and other options for a bitrate-based mode if the default is not the desired choice.
+Output #0, matroska, to 'C:\Users\elvis\AppData\Local\Temp\opencode\s2out\kf_h264_qsv.mkv':
+  Metadata:
+    encoder         : Lavf63.10.100
+  Stream #0:0: Video: h264 (H264 / 0x34363248), nv12(tv, progressive), 1920x1080 [SAR 1:1 DAR 16:9], q=2-31, 30 fps, 1k tbn
+    Metadata:
+      encoder         : Lavc63.20.100 h264_qsv
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+frame=   56 fps= 54 q=35.0 size=       1KiB time=00:00:01.76 bitrate=   2.7kbits/s speed=1.72x elapsed=0:00:01.02    
+frame=  262 fps=168 q=35.0 size=    4096KiB time=00:00:08.63 bitrate=3886.6kbits/s speed=5.55x elapsed=0:00:01.55    
+[out#0/matroska @ 000001c790e52240] video:6184KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.052079%
+frame=  300 fps=184 q=26.0 Lsize=    6187KiB time=00:00:09.90 bitrate=5119.9kbits/s speed=6.08x elapsed=0:00:01.62    
+RESULT: tag=kf_h264_qsv enc=h264_qsv exit=0 elapsed_s=2.17 out_bytes=6335929 speed=6.08 first_error=
+== ffprobe C:\Users\elvis\AppData\Local\Temp\opencode\s2out\kf_h264_qsv.mkv ==
+duration=10.000000
+stream=h264,1920,1080,30/1,300
+keyframe_count=6
+keyframes=0.000000 2.000000 4.000000 5.000000 7.000000 9.000000
+max_keyframe_gap_s=2

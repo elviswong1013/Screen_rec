@@ -1,0 +1,43 @@
+[package]
+name = "screen-rec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Screen_rec Tauri 主进程壳（M1-A 最小骨架）"
+
+[lib]
+name = "screen_rec_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# REQ-30：托盘（tray-icon）与托盘图标 ico 解码（image-ico，用现有占位 icons/icon.ico）
+tauri = { version = "2.12.4", features = ["tray-icon", "image-ico"] }
+# REQ-30 单实例（tauri 2.x 官方插件；二次启动聚焦已有窗口）
+tauri-plugin-single-instance = "2"
+# REQ-30 Settings（§3.4）序列化与自管 JSON 持久化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# P2 托盘提示（原生 MessageBox；与 workspace 其他 crate 同版本，非新增外部包）
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",            # P1-A：hide 覆盖层后 DwmFlush 等待合成
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# §3.3 命令接线（M9）：桥接既有 crate（全部为 workspace 内 path 依赖，零新增外部包）
+# - sr-core：ChannelHub（REQ-31 快照/告警/电平分离）
+# - sr-enum：窗口/显示器/活动音频会话枚举（REQ-1..4）
+# - sr-audio：AudioSourceSpec 与采集设备枚举（REQ-14..16）
+# - sr-pipeline：start_routes（全成功或回滚）/start_audio_only/探测/恢复（REQ-12/19/22/28）
+# - sr-shot：截图（REQ-5..7）；sr-merge：异构多轨合并（REQ-23）
+sr-core = { path = "../crates/sr-core" }
+sr-enum = { path = "../crates/sr-enum" }
+sr-audio = { path = "../crates/sr-audio" }
+sr-pipeline = { path = "../crates/sr-pipeline" }
+sr-shot = { path = "../crates/sr-shot" }
+sr-merge = { path = "../crates/sr-merge" }

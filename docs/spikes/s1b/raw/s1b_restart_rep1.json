@@ -1,0 +1,20 @@
+{
+  "case": "restart",
+  "label": "s1b_restart_rep1",
+  "iters": 12,
+  "frames_per_iter": 45,
+  "handles_before": 60,
+  "handles_after": 66,
+  "threads_before": 4,
+  "threads_after": 4,
+  "private_b_before": 655360,
+  "private_b_after": 815104,
+  "ffmpeg_procs_before": 0,
+  "ffmpeg_procs_after": 0,
+  "handles_mid": 68,
+  "threads_mid": 4,
+  "private_b_mid": 786432,
+  "ffmpeg_procs_mid": 0,
+  "forced_kills": 0,
+  "iters": [{"iter":0,"connect_ok":true,"connect_ms":19.8,"frames":45,"packets":45,"dur":1.567,"exit":0},{"iter":1,"connect_ok":true,"connect_ms":20.2,"frames":45,"packets":45,"dur":1.567,"exit":0},{"iter":2,"connect_ok":true,"connect_ms":22.7,"frames":45,"packets":45,"dur":1.567,"exit":0},{"iter":3,"connect_ok":true,"connect_ms":23.4,"frames":45,"packets":45,"dur":1.567,"exit":0},{"iter":4,"connect_ok":true,"connect_ms":22.8,"frames":45,"packets":45,"dur":1.567,"exit":0},{"iter":5,"connect_ok":true,"connect_ms":20.8,"frames":45,"packets":45,"dur":1.567,"exit":0},{"iter":6,"connect_ok":true,"connect_ms":23.0,"frames":45,"packets":45,"dur":1.567,"exit":0},{"iter":7,"connect_ok":true,"connect_ms":20.1,"frames":45,"packets":45,"dur":1.567,"exit":0},{"iter":8,"connect_ok":true,"connect_ms":21.3,"frames":45,"packets":45,"dur":1.567,"exit":0},{"iter":9,"connect_ok":true,"connect_ms":21.5,"frames":45,"packets":45,"dur":1.567,"exit":0},{"iter":10,"connect_ok":true,"connect_ms":24.0,"frames":45,"packets":45,"dur":1.567,"exit":0},{"iter":11,"connect_ok":true,"connect_ms":23.6,"frames":45,"packets":45,"dur":1.567,"exit":0}]
+}

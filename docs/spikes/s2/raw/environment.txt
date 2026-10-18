@@ -1,0 +1,14 @@
+﻿=== cmd /c ver ===
+
+Microsoft Windows [Version 10.0.26200.9457]
+=== CPU ===
+Intel(R) Core(TM) Ultra 7 270K Plus | Cores=24 Threads=24
+=== OS (registry) ===
+ProductName=Windows 10 Pro DisplayVersion=25H2 CurrentBuild=26200 UBR=9457
+=== GPU ===
+VirtualMonitor Device | DriverVersion=10.10.30.904 | DriverDate=06/14/2023 08:00:00 | AdapterRAM= | PNPDeviceID=ROOT\DISPLAY\0000
+Intel(R) Graphics | DriverVersion=32.0.101.6874 | DriverDate=05/25/2025 08:00:00 | AdapterRAM=2147479552 | PNPDeviceID=PCI\VEN_8086&DEV_7D67&SUBSYS_7E321462&REV_06\3&11583659&0&10
+NVIDIA GeForce RTX 5070 Ti | DriverVersion=32.0.15.9636 | DriverDate=04/23/2026 08:00:00 | AdapterRAM=4293918720 | PNPDeviceID=PCI\VEN_10DE&DEV_2C05&SUBSYS_277419DA&REV_A1\E2735D9AB52DB04800
+=== nvidia-smi ===
+name, driver_version, memory.total [MiB]
+NVIDIA GeForce RTX 5070 Ti, 596.36, 16303 MiB

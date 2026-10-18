@@ -1,0 +1,35 @@
+﻿[
+    {
+        "segment":  "out_000.mkv",
+        "rename_ok":  true,
+        "rename_ms":  5,
+        "rename_err":  "",
+        "move_ok":  true,
+        "move_ms":  3,
+        "move_err":  "",
+        "copy_delete_ok":  true,
+        "del_err":  ""
+    },
+    {
+        "segment":  "out_001.mkv",
+        "rename_ok":  true,
+        "rename_ms":  2,
+        "rename_err":  "",
+        "move_ok":  true,
+        "move_ms":  1,
+        "move_err":  "",
+        "copy_delete_ok":  true,
+        "del_err":  ""
+    },
+    {
+        "segment":  "out_002.mkv",
+        "rename_ok":  true,
+        "rename_ms":  1,
+        "rename_err":  "",
+        "move_ok":  true,
+        "move_ms":  1,
+        "move_err":  "",
+        "copy_delete_ok":  true,
+        "del_err":  ""
+    }
+]

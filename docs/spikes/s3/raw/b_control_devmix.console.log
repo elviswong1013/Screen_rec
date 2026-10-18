@@ -1,0 +1,30 @@
+[    0.000s] CMD: C:\Users\elvis\Documents\From MSI\git_repository\Screen_rec\tools\spikes\s3\apploop\target\release\apploop.exe record --pid 0 --device-loopback --out C:\Users\elvis\AppData\Local\Temp\opencode\s3run\b_control_devmix.wav --log C:\Users\elvis\Documents\From MSI\git_repository\Screen_rec\docs\spikes\s3\raw\b_control_devmix.run.log
+[    0.001s] COM: initialize_mta() hr=0x00000000 ok=true (RPC_E_CHANGED_MODE=0x80010106 means the thread already had another apartment)
+[    0.006s] ENDPOINT: render: 'LS24A600N' 48000Hz 2ch int16bits/16bits blockalign=4 | capture: error Windows(Error { code: HRESULT(0x80070490), message: "元素找不到。" })
+[    0.008s] ACTIVATE: device loopback (system mix) on default render endpoint 'LS24A600N' in 1.8 ms (pid=0 ignored)
+[    0.009s] GETMIXFORMAT: ok: 48000Hz 2ch float32bits/32bits blockalign=8
+[    0.013s] INITIALIZE: ok fmt=48000Hz 2ch float32bits/32bits blockalign=8 mode=EventsShared autoconvert=true buffer_duration_hns=0
+[    0.014s] START: recording 8.000s -> C:\Users\elvis\AppData\Local\Temp\opencode\s3run\b_control_devmix.wav
+[    0.021s] PKT#1 frames=480 index=86400 ts=2696062765623 flags=silent:false disc:true tserr:false t=0.006s
+[    0.021s] FLAG DATA_DISCONTINUITY: packet#1 frames=480 index=86400 t=0.006s
+[    0.031s] PKT#2 frames=480 index=86880 ts=2696062865688 flags=silent:false disc:false tserr:false t=0.016s
+[    0.041s] PKT#3 frames=480 index=87360 ts=2696062965772 flags=silent:false disc:false tserr:false t=0.026s
+[    0.051s] PKT#4 frames=480 index=87840 ts=2696063065795 flags=silent:false disc:false tserr:false t=0.036s
+[    0.061s] PKT#5 frames=480 index=88320 ts=2696063165693 flags=silent:false disc:false tserr:false t=0.046s
+[    1.021s] HEARTBEAT t=1.0s packets=101 frames=48480 silent=0 gaps=0 empty_reads=101
+[    2.021s] HEARTBEAT t=2.0s packets=201 frames=96480 silent=0 gaps=0 empty_reads=201
+[    3.021s] HEARTBEAT t=3.0s packets=301 frames=144480 silent=0 gaps=0 empty_reads=301
+[    4.021s] HEARTBEAT t=4.0s packets=401 frames=192480 silent=0 gaps=0 empty_reads=401
+[    5.021s] HEARTBEAT t=5.0s packets=501 frames=240480 silent=0 gaps=0 empty_reads=501
+[    6.021s] HEARTBEAT t=6.0s packets=601 frames=288480 silent=0 gaps=0 empty_reads=601
+[    7.021s] HEARTBEAT t=7.0s packets=701 frames=336480 silent=0 gaps=0 empty_reads=701
+[    8.021s] WAV: 3075908 bytes
+[    8.023s] RESULT pid=0 out=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\b_control_devmix.wav
+[    8.023s] RESULT seconds=8 mode=device_loopback autoconvert=true pad_silence=false format=f32/2ch/48000Hz
+[    8.023s] RESULT packets=801 frames=384480 written_s=8.010000 padded_frames=0 padded_s=0.000000 wall_s=8.006
+[    8.023s] RESULT flags silent_packets=0 data_discontinuity_packets=1 timestamp_error_packets=0 empty_reads=801
+[    8.023s] RESULT first_packet_s=Some(0.0062565) last_packet_s=Some(8.0060258) ts_span_s=7.999973 ts_vs_frames_ratio=0.998748
+[    8.023s] RESULT device_position_gap_events=0 device_position_gap_frames=0 device_position_rewind_events=0 first_gap=None (note: process loopback keeps device position at 0 per packet; use timestamps)
+[    8.023s] RESULT ts_step_max_abs_ms=0.020 ts_step_events_gt5ms=0
+[    8.024s] RESULT packet_frames_min=Some(480) max=Some(480)
+[    8.024s] done

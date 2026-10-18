@@ -1,0 +1,11 @@
+﻿BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\c_stop_padded.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=384000 duration_s=8.000000
+BASIC peak_dbfs=-21.07 rms_dbfs=-28.39
+FFT nfft=32768 bin_hz=1.464844 frames=20 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=439.453 db_fs=-26.21 db_rel_ref=0.00
+TONE freq=880.0 peak_at=874.512 db_fs=-95.38 db_rel_ref=-69.17
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-111.89 median_db_rel_ref=-85.68
+GLOBAL_PEAK freq=439.453 db_fs=-26.21
+LEAK freq=880.0 rel_db=-69.17 limit_db=-40.00 ok
+VERDICT ref=440.0 threshold_db=-40.00 PASS
+CSV path=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\c_stop_padded.csv

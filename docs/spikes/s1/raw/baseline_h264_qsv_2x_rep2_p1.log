@@ -1,0 +1,25 @@
+﻿CMD: ffmpeg -hide_banner -nostdin -f lavfi -i testsrc2=size=1920x1080:rate=30 -t 10 -g 60 -c:v h264_qsv -f segment -segment_time 5 -reset_timestamps 1 -segment_format matroska -y C:\Users\elvis\AppData\Local\Temp\opencode\s1out\baseline\baseline_h264_qsv_2x_rep2_p1\out_%05d.mkv
+START: 2026-10-16T00:16:13.1496626+08:00
+Input #0, lavfi, from 'testsrc2=size=1920x1080:rate=30':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, yuv420p, 1920x1080 [SAR 1:1 DAR 16:9], 30 fps, 30 tbr, 30 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> h264 (h264_qsv))
+[h264_qsv @ 000002104814f880] Using the constant quantization parameter (CQP) by default. Please use the global_quality option and other options for a quality-based mode or the b option and other options for a bitrate-based mode if the default is not the desired choice.
+[segment @ 0000021048a8fb80] Opening 'C:\Users\elvis\AppData\Local\Temp\opencode\s1out\baseline\baseline_h264_qsv_2x_rep2_p1\out_00000.mkv' for writing
+Output #0, segment, to 'C:\Users\elvis\AppData\Local\Temp\opencode\s1out\baseline\baseline_h264_qsv_2x_rep2_p1\out_%05d.mkv':
+  Metadata:
+    encoder         : Lavf63.10.100
+  Stream #0:0: Video: h264, nv12(tv, progressive), 1920x1080 [SAR 1:1 DAR 16:9], q=2-31, 30 fps, 1k tbn
+    Metadata:
+      encoder         : Lavc63.20.100 h264_qsv
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+frame=    8 fps=7.7 q=35.0 size=N/A time=00:00:00.16 bitrate=N/A speed=0.161x elapsed=0:00:01.03    
+frame=   73 fps= 47 q=35.0 size=N/A time=00:00:02.33 bitrate=N/A speed=1.51x elapsed=0:00:01.54    
+frame=  165 fps= 80 q=35.0 size=N/A time=00:00:05.40 bitrate=N/A speed=2.62x elapsed=0:00:02.06    
+[segment @ 0000021048a8fb80] Opening 'C:\Users\elvis\AppData\Local\Temp\opencode\s1out\baseline\baseline_h264_qsv_2x_rep2_p1\out_00001.mkv' for writing
+[out#0/segment @ 00000210480e1680] video:6106KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=  300 fps=121 q=35.0 Lsize=N/A time=00:00:09.90 bitrate=N/A speed=3.99x elapsed=0:00:02.48    
+RESULT: tag=baseline_h264_qsv_2x_rep2_p1 exit=0 elapsed_s=2.62 speed=3.99
+PROBE: segs=2 dur_sum=10.067 packets_sum=300

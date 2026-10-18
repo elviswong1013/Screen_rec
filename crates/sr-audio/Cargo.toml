@@ -1,0 +1,26 @@
+[package]
+name = "sr-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Screen_rec 音频（wasapi 进程环回/设备环回/麦克风、样本槽编排、变重与漂移、WAV）"
+
+[dependencies]
+# 已批准栈（specs/001-screen-recorder.md §1）：wasapi 0.26（MIT；进程环回
+# new_application_loopback_client 内含 ActivateAudioInterfaceAsync + INCLUDE 树语义）。
+# 客户端类型 !Send：每采集线程内创建/使用/释放（§3.1 线程规则）。
+wasapi = "0.26"
+
+# REQ-26 慢漂移变比重采样（spec §1/§2.6/D2）：rubato 5.x + sinc 插值。
+# 仅用异步 Async（Async::new_sinc 无需 FFT 特性），关闭默认 fft_resampler
+# 以避免引入仅 FFT 路径使用的 realfft/num-complex 依赖。
+rubato = { version = "5.0.1", default-features = false }
+
+# 身份前置校验（REQ-14/D9）与 QPC 时基：OpenProcess/GetProcessTimes/Toolhelp/QPC。
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Performance",
+    "Win32_System_Threading",
+] }

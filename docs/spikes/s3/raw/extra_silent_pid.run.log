@@ -1,0 +1,29 @@
+[    0.000s] CMD: C:\Users\elvis\Documents\From MSI\git_repository\Screen_rec\tools\spikes\s3\apploop\target\release\apploop.exe record --pid 107240 --out C:\Users\elvis\AppData\Local\Temp\opencode\s3run\extra_silent_pid.wav --log C:\Users\elvis\Documents\From MSI\git_repository\Screen_rec\docs\spikes\s3\raw\extra_silent_pid.run.log
+[    0.001s] COM: initialize_mta() hr=0x00000000 ok=true (RPC_E_CHANGED_MODE=0x80010106 means the thread already had another apartment)
+[    0.005s] ENDPOINT: render: 'LS24A600N' 48000Hz 2ch int16bits/16bits blockalign=4 | capture: error Windows(Error { code: HRESULT(0x80070490), message: "元素找不到。" })
+[    0.007s] ACTIVATE: ok pid=107240 mode=INCLUDE_TARGET_PROCESS_TREE in 1.3 ms
+[    0.007s] GETMIXFORMAT: error (expected for process loopback): Windows(Error { code: HRESULT(0x80004001), message: "未執行" })
+[    0.007s] INITIALIZE: ok fmt=48000Hz 2ch float32bits/32bits blockalign=8 mode=EventsShared autoconvert=true buffer_duration_hns=0
+[    0.008s] START: recording 8.000s -> C:\Users\elvis\AppData\Local\Temp\opencode\s3run\extra_silent_pid.wav
+[    0.020s] PKT#1 frames=480 index=0 ts=2697056623927 flags=silent:false disc:false tserr:false t=0.012s
+[    0.030s] PKT#2 frames=480 index=0 ts=2697056723927 flags=silent:false disc:false tserr:false t=0.022s
+[    0.040s] PKT#3 frames=480 index=0 ts=2697056823927 flags=silent:false disc:false tserr:false t=0.032s
+[    0.050s] PKT#4 frames=480 index=0 ts=2697056923927 flags=silent:false disc:false tserr:false t=0.042s
+[    0.060s] PKT#5 frames=480 index=0 ts=2697057023927 flags=silent:false disc:false tserr:false t=0.052s
+[    1.010s] HEARTBEAT t=1.0s packets=100 frames=48000 silent=0 gaps=0 empty_reads=100
+[    2.010s] HEARTBEAT t=2.0s packets=200 frames=96000 silent=0 gaps=0 empty_reads=200
+[    3.010s] HEARTBEAT t=3.0s packets=300 frames=144000 silent=0 gaps=0 empty_reads=300
+[    4.010s] HEARTBEAT t=4.0s packets=400 frames=192000 silent=0 gaps=0 empty_reads=400
+[    5.010s] HEARTBEAT t=5.0s packets=500 frames=240000 silent=0 gaps=0 empty_reads=500
+[    6.010s] HEARTBEAT t=6.0s packets=600 frames=288000 silent=0 gaps=0 empty_reads=600
+[    7.010s] HEARTBEAT t=7.0s packets=700 frames=336000 silent=0 gaps=0 empty_reads=700
+[    8.010s] WAV: 3072068 bytes
+[    8.011s] RESULT pid=107240 out=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\extra_silent_pid.wav
+[    8.011s] RESULT seconds=8 mode=include_tree autoconvert=true pad_silence=false format=f32/2ch/48000Hz
+[    8.011s] RESULT packets=800 frames=384000 written_s=8.000000 padded_frames=0 padded_s=0.000000 wall_s=8.002
+[    8.011s] RESULT flags silent_packets=0 data_discontinuity_packets=0 timestamp_error_packets=0 empty_reads=800
+[    8.012s] RESULT first_packet_s=Some(0.0116725) last_packet_s=Some(8.0017688) ts_span_s=7.990000 ts_vs_frames_ratio=0.998750
+[    8.012s] RESULT device_position_gap_events=0 device_position_gap_frames=0 device_position_rewind_events=799 first_gap=None (note: process loopback keeps device position at 0 per packet; use timestamps)
+[    8.012s] RESULT ts_step_max_abs_ms=0.000 ts_step_events_gt5ms=0
+[    8.012s] RESULT packet_frames_min=Some(480) max=Some(480)
+[    8.012s] done

@@ -1,0 +1,10 @@
+[package]
+name = "sr-merge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# 运行时工具解析（M11-C P1-5：ffmpeg/ffprobe 安装后路径；env/resource/exe/dev 回退）。
+sr-core = { path = "../sr-core" }

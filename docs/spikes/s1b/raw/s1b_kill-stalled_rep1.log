@@ -1,0 +1,7 @@
+﻿CMD: pipefault --case kill-stalled --label s1b_kill-stalled_rep1 --seconds 10 --kill-at 4.5 --suspend-before-kill 1.2
+START: 2026-10-16T00:53:35.8677761+08:00
+pipefault case=kill-stalled label=s1b_kill-stalled_rep1 seconds=10 fps=30 pipe_buf=4194304
+JSON: C:\Users\elvis\Documents\From MSI\git_repository\Screen_rec\docs\spikes\s1b\raw\s1b_kill-stalled_rep1.json
+DONE case=kill-stalled
+RESULT: label=s1b_kill-stalled_rep1 exit=0 elapsed_s=6.33
+PROBE: frames_written=109 packets_sum=49 ffmpeg_exit=1 write_error={"frame":109,"code":232,"name":"ERROR_NO_DATA","detect_after_kill_issue_s":1.654,"detect_after_child_death_s":-0.007}

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Screen_rec — 截图 / 录屏 / 录音</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside class="nav">
+        <div class="brand">
+          <div class="brand-dot">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="7"/></svg>
+          </div>
+          <div>
+            <div class="brand-name">Screen_rec</div>
+            <div class="brand-sub">截图 · 录屏 · 录音</div>
+          </div>
+        </div>
+        <button class="nav-item active" data-nav="record">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="14" height="14" rx="2"/><path d="M16 10l6-3v10l-6-3"/></svg>
+          录制
+          <span class="badge-dot" id="nav-rec-count" hidden>0</span>
+        </button>
+        <button class="nav-item" data-nav="screenshot">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          截图
+        </button>
+        <button class="nav-item" data-nav="merge">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/><path d="M12 8v8m-4-4h8"/></svg>
+          合并
+        </button>
+        <button class="nav-item" data-nav="settings">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          设置
+        </button>
+        <div class="nav-foot">
+          <span class="env-badge" id="env-badge">…</span>
+          <span id="nav-foot-os" class="muted"></span>
+        </div>
+      </aside>
+
+      <main>
+        <div id="recovery-mount"></div>
+
+        <!-- 录制视图 -->
+        <section class="view active" id="view-record">
+          <h2 class="view-title">录制</h2>
+          <p class="view-desc">选择窗口或显示器，配置音轨后即可开始；支持多路同时录制，每路独立输出文件。</p>
+          <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+            <div class="mode-tabs" id="mode-tabs">
+              <button data-mode="screen" class="active">录屏</button>
+              <button data-mode="audio">纯录音</button>
+            </div>
+            <div class="caps-row" id="caps-row" style="margin:0;"></div>
+          </div>
+          <div id="degraded-mount" style="margin-top:14px;"></div>
+          <div id="routes-mount" style="margin-top:16px;"></div>
+          <div class="setup" id="setup-mount" style="margin-top:4px;">
+            <div class="panel">
+              <div class="panel-title" id="left-panel-title">目标
+                <span class="spacer"></span>
+                <button class="btn-sm btn-ghost" id="btn-refresh" title="刷新列表（Ctrl+R）">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                  刷新
+                </button>
+              </div>
+              <div id="left-panel-body"></div>
+            </div>
+            <div class="panel" id="config-panel"></div>
+          </div>
+          <div class="start-bar" id="start-bar"></div>
+        </section>
+
+        <!-- 截图视图 -->
+        <section class="view" id="view-screenshot">
+          <h2 class="view-title">截图</h2>
+          <p class="view-desc">输出 PNG 到输出目录；窗口截图不受遮挡影响，最小化窗口会返回明确错误。</p>
+          <div class="shot-grid">
+            <div class="panel">
+              <div class="panel-title">显示器</div>
+              <div id="shot-monitors"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">窗口</div>
+              <div id="shot-windows"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">区域</div>
+              <p class="muted" style="margin:4px 0 12px;font-size:13px;">在全屏覆盖层上拖出矩形区域，Esc 取消。支持跨显示器与负坐标。</p>
+              <button class="btn-primary" id="btn-region-shot">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px;"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2m0 10v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/></svg>
+                框选区域截图
+              </button>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-title">本次会话截图记录</div>
+            <div id="shot-history"></div>
+          </div>
+        </section>
+
+        <!-- 合并视图 -->
+        <section class="view" id="view-merge">
+          <h2 class="view-title">合并</h2>
+          <p class="view-desc">把多个录制文件合并为一个多轨 MKV：流拷贝、不重编码，各路视频/音频保留为独立轨道，允许分辨率与帧率不同。</p>
+          <div class="setup">
+            <div class="panel">
+              <div class="panel-title">输入文件（至少 2 个）</div>
+              <div class="field" style="display:flex;gap:8px;">
+                <input type="text" id="merge-add-input" placeholder="手动添加文件路径，如 D:\rec\a.mkv" />
+                <button class="btn-sm" id="merge-add-btn" style="flex:none;">添加</button>
+              </div>
+              <div class="merge-list" id="merge-list"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">输出</div>
+              <div class="field">
+                <label>输出路径（.mkv）</label>
+                <input type="text" id="merge-out" />
+                <div class="hint">不会覆盖输入文件；失败或取消时输入保留。</div>
+              </div>
+              <button class="btn-primary" id="btn-merge" disabled>开始合并</button>
+              <div id="merge-progress" style="margin-top:14px;"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 设置视图 -->
+        <section class="view" id="view-settings">
+          <h2 class="view-title">设置</h2>
+          <p class="view-desc">保存后立即生效；输出目录、分段时长等将用于之后开始的录制。</p>
+          <div class="panel settings-grid" id="settings-panel"></div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast-root"></div>
+    <script src="./api.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

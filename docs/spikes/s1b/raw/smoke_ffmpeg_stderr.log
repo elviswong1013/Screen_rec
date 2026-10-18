@@ -1,0 +1,17 @@
+Input #0, rawvideo, from '\\.\pipe\screenrec_s1b_smoke':
+  Duration: N/A, start: 0.000000, bitrate: 746496 kb/s
+  Stream #0:0: Video: rawvideo (NV12 / 0x3231564E), nv12, 1920x1080, 746496 kb/s, 30 tbr, 30 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (rawvideo (native) -> h264 (h264_qsv))
+[h264_qsv @ 0000020753ce5a40] Using the constant quantization parameter (CQP) by default. Please use the global_quality option and other options for a quality-based mode or the b option and other options for a bitrate-based mode if the default is not the desired choice.
+[segment @ 0000020753ce4680] Opening 'C:\Users\elvis\AppData\Local\Temp\opencode\s1bout\smoke\out_00000.mkv' for writing
+Output #0, segment, to 'C:\Users\elvis\AppData\Local\Temp\opencode\s1bout\smoke\out_%05d.mkv':
+  Metadata:
+    encoder         : Lavf63.10.100
+  Stream #0:0: Video: h264, nv12(tv, progressive), 1920x1080, q=2-31, 30 fps, 1k tbn
+    Metadata:
+      encoder         : Lavc63.20.100 h264_qsv
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+frame=   22 fps= 21 q=26.0 size=N/A time=00:00:00.63 bitrate=N/A speed=0.609x elapsed=0:00:01.04    frame=   37 fps= 24 q=35.0 size=N/A time=00:00:01.13 bitrate=N/A speed=0.728x elapsed=0:00:01.55    frame=   52 fps= 25 q=35.0 size=N/A time=00:00:01.63 bitrate=N/A speed=0.792x elapsed=0:00:02.06    frame=   68 fps= 26 q=35.0 size=N/A time=00:00:02.16 bitrate=N/A speed=0.839x elapsed=0:00:02.58    [out#0/segment @ 0000020753c81300] video:945KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=   90 fps= 30 q=26.0 Lsize=N/A time=00:00:02.90 bitrate=N/A speed=0.968x elapsed=0:00:02.99    

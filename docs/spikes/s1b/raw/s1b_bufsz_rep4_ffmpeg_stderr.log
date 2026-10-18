@@ -1,0 +1,18 @@
+Input #0, rawvideo, from '\\.\pipe\screenrec_s1b_s1b_bufsz_rep4':
+  Duration: N/A, start: 0.000000, bitrate: 746496 kb/s
+  Stream #0:0: Video: rawvideo (NV12 / 0x3231564E), nv12, 1920x1080, 746496 kb/s, 30 tbr, 30 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (rawvideo (native) -> h264 (h264_qsv))
+[h264_qsv @ 00000285469dde00] Using the constant quantization parameter (CQP) by default. Please use the global_quality option and other options for a quality-based mode or the b option and other options for a bitrate-based mode if the default is not the desired choice.
+[segment @ 00000285469dca80] Opening 'C:\Users\elvis\AppData\Local\Temp\opencode\s1bout\s1b_bufsz_rep4\out_00000.mkv' for writing
+Output #0, segment, to 'C:\Users\elvis\AppData\Local\Temp\opencode\s1bout\s1b_bufsz_rep4\out_%05d.mkv':
+  Metadata:
+    encoder         : Lavf63.10.100
+  Stream #0:0: Video: h264, nv12(tv, progressive), 1920x1080, q=2-31, 30 fps, 1k tbn
+    Metadata:
+      encoder         : Lavc63.20.100 h264_qsv
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+frame=   22 fps= 21 q=26.0 size=N/A time=00:00:00.63 bitrate=N/A speed=0.612x elapsed=0:00:01.03    frame=   37 fps= 24 q=35.0 size=N/A time=00:00:01.13 bitrate=N/A speed=0.736x elapsed=0:00:01.53    frame=   52 fps= 25 q=35.0 size=N/A time=00:00:01.63 bitrate=N/A speed=0.791x elapsed=0:00:02.06    frame=   68 fps= 26 q=35.0 size=N/A time=00:00:02.16 bitrate=N/A speed=0.842x elapsed=0:00:02.57    frame=   83 fps= 27 q=34.0 size=N/A time=00:00:02.66 bitrate=N/A speed=0.861x elapsed=0:00:03.09    frame=   99 fps= 27 q=34.0 size=N/A time=00:00:03.20 bitrate=N/A speed=0.886x elapsed=0:00:03.61    frame=  114 fps= 28 q=26.0 size=N/A time=00:00:03.70 bitrate=N/A speed=0.898x elapsed=0:00:04.11    frame=  130 fps= 28 q=26.0 size=N/A time=00:00:04.23 bitrate=N/A speed=0.913x elapsed=0:00:04.63    frame=  145 fps= 28 q=35.0 size=N/A time=00:00:04.73 bitrate=N/A speed=0.92x elapsed=0:00:05.14    frame=  161 fps= 28 q=35.0 size=N/A time=00:00:05.26 bitrate=N/A speed=0.929x elapsed=0:00:05.66    frame=  176 fps= 28 q=35.0 size=N/A time=00:00:05.76 bitrate=N/A speed=0.934x elapsed=0:00:06.17    [segment @ 00000285469dca80] Opening 'C:\Users\elvis\AppData\Local\Temp\opencode\s1bout\s1b_bufsz_rep4\out_00001.mkv' for writing
+frame=  191 fps= 29 q=34.0 size=N/A time=00:00:06.26 bitrate=N/A speed=0.936x elapsed=0:00:06.69    frame=  207 fps= 29 q=34.0 size=N/A time=00:00:06.80 bitrate=N/A speed=0.942x elapsed=0:00:07.21    frame=  222 fps= 29 q=26.0 size=N/A time=00:00:07.30 bitrate=N/A speed=0.945x elapsed=0:00:07.72    frame=  238 fps= 29 q=26.0 size=N/A time=00:00:07.83 bitrate=N/A speed=0.95x elapsed=0:00:08.24    frame=  253 fps= 29 q=35.0 size=N/A time=00:00:08.33 bitrate=N/A speed=0.951x elapsed=0:00:08.76    frame=  269 fps= 29 q=35.0 size=N/A time=00:00:08.86 bitrate=N/A speed=0.956x elapsed=0:00:09.27    frame=  284 fps= 29 q=35.0 size=N/A time=00:00:09.36 bitrate=N/A speed=0.956x elapsed=0:00:09.79    [out#0/segment @ 0000028546982ec0] video:3116KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=  300 fps= 30 q=35.0 Lsize=N/A time=00:00:09.90 bitrate=N/A speed=0.99x elapsed=0:00:09.99    

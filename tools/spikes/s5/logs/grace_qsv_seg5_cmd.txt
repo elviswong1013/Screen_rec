@@ -1,0 +1,1 @@
+﻿-hide_banner -re -f lavfi -i testsrc2=size=1920x1080:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 -f lavfi -i sine=frequency=880:sample_rate=48000 -map 0:v -map 1:a -map 2:a -c:v h264_qsv -g 60 -c:a aac -f segment -segment_time 5 -reset_timestamps 1 -segment_format matroska C:\Users\elvis\AppData\Local\Temp\opencode\s5\grace_qsv_seg5\out_%03d.mkv

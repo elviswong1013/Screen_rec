@@ -1,0 +1,7 @@
+﻿CMD: pipefault --case slowread --label s1b_slowread_rep2 --seconds 8 --readrate 0.25 --readrate-catchup 0.25
+START: 2026-10-16T00:55:11.8641458+08:00
+pipefault case=slowread label=s1b_slowread_rep2 seconds=8 fps=30 pipe_buf=4194304
+JSON: C:\Users\elvis\Documents\From MSI\git_repository\Screen_rec\docs\spikes\s1b\raw\s1b_slowread_rep2.json
+DONE case=slowread
+RESULT: label=s1b_slowread_rep2 exit=0 elapsed_s=29.89
+PROBE: frames_written=240 packets_sum=240 ffmpeg_exit=0 write_error=

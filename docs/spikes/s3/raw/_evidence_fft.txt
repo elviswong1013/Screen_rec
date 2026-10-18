@@ -1,0 +1,143 @@
+﻿== a_onlyA.analysis.log ==
+BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\a_onlyA.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=384000 duration_s=8.000000
+BASIC peak_dbfs=-21.07 rms_dbfs=-24.10
+FFT nfft=32768 bin_hz=1.464844 frames=20 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=439.453 db_fs=-21.86 db_rel_ref=0.00
+TONE freq=880.0 peak_at=874.512 db_fs=-180.04 db_rel_ref=-158.18
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-198.27 median_db_rel_ref=-176.40
+GLOBAL_PEAK freq=439.453 db_fs=-21.86
+LEAK freq=880.0 rel_db=-158.18 limit_db=-40.00 ok
+VERDICT ref=440.0 threshold_db=-40.00 PASS
+== b_ab_recordA.analysis.log ==
+BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\b_ab_recordA.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=384000 duration_s=8.000000
+BASIC peak_dbfs=-21.07 rms_dbfs=-24.10
+FFT nfft=32768 bin_hz=1.464844 frames=20 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=439.453 db_fs=-21.86 db_rel_ref=0.00
+TONE freq=880.0 peak_at=874.512 db_fs=-180.06 db_rel_ref=-158.19
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-198.31 median_db_rel_ref=-176.44
+GLOBAL_PEAK freq=439.453 db_fs=-21.86
+LEAK freq=880.0 rel_db=-158.19 limit_db=-40.00 ok
+VERDICT ref=440.0 threshold_db=-40.00 PASS
+== b_ab_recordB.analysis.log ==
+BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\b_ab_recordB.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=384000 duration_s=8.000000
+BASIC peak_dbfs=-21.07 rms_dbfs=-24.10
+FFT nfft=32768 bin_hz=1.464844 frames=20 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=445.312 db_fs=-182.28 db_rel_ref=-160.84
+TONE freq=880.0 peak_at=880.371 db_fs=-21.44 db_rel_ref=0.00
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-205.20 median_db_rel_ref=-183.77
+GLOBAL_PEAK freq=880.371 db_fs=-21.44
+LEAK freq=440.0 rel_db=-160.84 limit_db=-40.00 ok
+VERDICT ref=880.0 threshold_db=-40.00 PASS
+== b_control_devmix.analysis.log ==
+BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\b_control_devmix.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=384480 duration_s=8.010000
+BASIC peak_dbfs=-20.51 rms_dbfs=-26.48
+FFT nfft=32768 bin_hz=1.464844 frames=21 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=439.453 db_fs=-27.27 db_rel_ref=-0.43
+TONE freq=880.0 peak_at=880.371 db_fs=-26.84 db_rel_ref=0.00
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-191.30 median_db_rel_ref=-164.46
+GLOBAL_PEAK freq=880.371 db_fs=-26.84
+LEAK freq=440.0 rel_db=-0.43 limit_db=-40.00 VIOLATION
+VERDICT ref=880.0 threshold_db=-40.00 FAIL
+== c_stop_natural.analysis.log ==
+BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\c_stop_natural.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=383040 duration_s=7.980000
+BASIC peak_dbfs=-21.07 rms_dbfs=-28.36
+FFT nfft=32768 bin_hz=1.464844 frames=20 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=439.453 db_fs=-26.19 db_rel_ref=0.00
+TONE freq=880.0 peak_at=874.512 db_fs=-92.09 db_rel_ref=-65.90
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-105.62 median_db_rel_ref=-79.43
+GLOBAL_PEAK freq=439.453 db_fs=-26.19
+LEAK freq=880.0 rel_db=-65.90 limit_db=-40.00 ok
+VERDICT ref=440.0 threshold_db=-40.00 PASS
+== c_stop_padded.analysis.log ==
+BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\c_stop_padded.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=384000 duration_s=8.000000
+BASIC peak_dbfs=-21.07 rms_dbfs=-28.39
+FFT nfft=32768 bin_hz=1.464844 frames=20 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=439.453 db_fs=-26.21 db_rel_ref=0.00
+TONE freq=880.0 peak_at=874.512 db_fs=-95.38 db_rel_ref=-69.17
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-111.89 median_db_rel_ref=-85.68
+GLOBAL_PEAK freq=439.453 db_fs=-26.21
+LEAK freq=880.0 rel_db=-69.17 limit_db=-40.00 ok
+VERDICT ref=440.0 threshold_db=-40.00 PASS
+== ctl_single_devmix.analysis.log ==
+BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\ctl_single_devmix.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=192480 duration_s=4.010000
+BASIC peak_dbfs=-26.48 rms_dbfs=-29.49
+FFT nfft=32768 bin_hz=1.464844 frames=9 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=439.453 db_fs=-27.27 db_rel_ref=0.00
+TONE freq=880.0 peak_at=874.512 db_fs=-185.45 db_rel_ref=-158.18
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-203.71 median_db_rel_ref=-176.44
+GLOBAL_PEAK freq=439.453 db_fs=-27.27
+LEAK freq=880.0 rel_db=-158.18 limit_db=-40.00 ok
+VERDICT ref=440.0 threshold_db=-40.00 PASS
+== ctl_single_proc.analysis.log ==
+BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\ctl_single_proc.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=192000 duration_s=4.000000
+BASIC peak_dbfs=-21.07 rms_dbfs=-24.12
+FFT nfft=32768 bin_hz=1.464844 frames=9 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=439.453 db_fs=-21.86 db_rel_ref=0.00
+TONE freq=880.0 peak_at=874.512 db_fs=-180.07 db_rel_ref=-158.21
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-198.32 median_db_rel_ref=-176.46
+GLOBAL_PEAK freq=439.453 db_fs=-21.86
+LEAK freq=880.0 rel_db=-158.21 limit_db=-40.00 ok
+VERDICT ref=440.0 threshold_db=-40.00 PASS
+== d_dual_A.analysis.log ==
+BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\d_dual_A.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=384000 duration_s=8.000000
+BASIC peak_dbfs=-21.07 rms_dbfs=-24.10
+FFT nfft=32768 bin_hz=1.464844 frames=20 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=439.453 db_fs=-21.86 db_rel_ref=0.00
+TONE freq=880.0 peak_at=874.512 db_fs=-180.07 db_rel_ref=-158.21
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-198.30 median_db_rel_ref=-176.44
+GLOBAL_PEAK freq=439.453 db_fs=-21.86
+LEAK freq=880.0 rel_db=-158.21 limit_db=-40.00 ok
+VERDICT ref=440.0 threshold_db=-40.00 PASS
+== d_dual_B.analysis.log ==
+BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\d_dual_B.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=384000 duration_s=8.000000
+BASIC peak_dbfs=-21.07 rms_dbfs=-24.10
+FFT nfft=32768 bin_hz=1.464844 frames=20 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=445.312 db_fs=-182.28 db_rel_ref=-160.84
+TONE freq=880.0 peak_at=880.371 db_fs=-21.44 db_rel_ref=0.00
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-205.27 median_db_rel_ref=-183.83
+GLOBAL_PEAK freq=880.371 db_fs=-21.44
+LEAK freq=440.0 rel_db=-160.84 limit_db=-40.00 ok
+VERDICT ref=880.0 threshold_db=-40.00 PASS
+== e_tree_exclude.analysis.log ==
+BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\e_tree_exclude.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=384000 duration_s=8.000000
+BASIC peak_dbfs=-21.07 rms_dbfs=-24.10
+FFT nfft=32768 bin_hz=1.464844 frames=20 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=445.312 db_fs=-182.28 db_rel_ref=-160.84
+TONE freq=880.0 peak_at=880.371 db_fs=-21.44 db_rel_ref=0.00
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-205.20 median_db_rel_ref=-183.77
+GLOBAL_PEAK freq=880.371 db_fs=-21.44
+LEAK freq=440.0 rel_db=-160.84 limit_db=-40.00 ok
+VERDICT ref=880.0 threshold_db=-40.00 PASS
+== e_tree_include.analysis.log ==
+BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\e_tree_include.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=384000 duration_s=8.000000
+BASIC peak_dbfs=-21.07 rms_dbfs=-24.10
+FFT nfft=32768 bin_hz=1.464844 frames=20 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=439.453 db_fs=-21.86 db_rel_ref=0.00
+TONE freq=880.0 peak_at=874.512 db_fs=-180.06 db_rel_ref=-158.20
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-198.30 median_db_rel_ref=-176.44
+GLOBAL_PEAK freq=439.453 db_fs=-21.86
+LEAK freq=880.0 rel_db=-158.20 limit_db=-40.00 ok
+VERDICT ref=440.0 threshold_db=-40.00 PASS
+== extra_silent_pid.analysis.log ==
+BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\extra_silent_pid.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=384000 duration_s=8.000000
+BASIC peak_dbfs=-200.00 rms_dbfs=-200.00
+FFT nfft=32768 bin_hz=1.464844 frames=20 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=433.594 db_fs=-300.00 db_rel_ref=0.00
+TONE freq=880.0 peak_at=874.512 db_fs=-300.00 db_rel_ref=0.00
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-300.00 median_db_rel_ref=0.00
+GLOBAL_PEAK freq=51.270 db_fs=-300.00
+LEAK freq=440.0 rel_db=0.00 limit_db=-40.00 VIOLATION
+VERDICT ref=880.0 threshold_db=-40.00 FAIL

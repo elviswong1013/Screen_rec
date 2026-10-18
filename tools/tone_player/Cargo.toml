@@ -1,0 +1,9 @@
+[package]
+name = "tone-player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Screen_rec 测试助手：音调/闪光/节拍参考（占位）"
+
+[dependencies]

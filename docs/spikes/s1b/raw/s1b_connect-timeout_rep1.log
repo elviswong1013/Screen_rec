@@ -1,0 +1,7 @@
+﻿CMD: pipefault --case connect-timeout --label s1b_connect-timeout_rep1 --cancel-connect-after-ms 5000
+START: 2026-10-16T00:55:51.6071983+08:00
+pipefault case=connect-timeout label=s1b_connect-timeout_rep1 seconds=10 fps=30 pipe_buf=4194304
+JSON: C:\Users\elvis\Documents\From MSI\git_repository\Screen_rec\docs\spikes\s1b\raw\s1b_connect-timeout_rep1.json
+DONE case=connect-timeout
+RESULT: label=s1b_connect-timeout_rep1 exit=0 elapsed_s=14.4
+PROBE: frames_written= packets_sum= ffmpeg_exit= write_error=

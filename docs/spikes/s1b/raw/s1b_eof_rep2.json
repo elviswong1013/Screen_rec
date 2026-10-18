@@ -1,0 +1,20 @@
+{
+  "case": "eof",
+  "label": "s1b_eof_rep2",
+  "ffmpeg_cmd": "ffmpeg -hide_banner -nostdin -f rawvideo -pix_fmt nv12 -s 1920x1080 -framerate 30 -i \\\\.\\pipe\\screenrec_s1b_s1b_eof_rep2 -c:v h264_qsv -g 60 -f segment -segment_time 5 -reset_timestamps 1 -segment_format matroska -y C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1bout\\s1b_eof_rep2\\out_%05d.mkv",
+  "pipe_buf": 4194304,
+  "n_frames_target": 90,
+  "frames_written": 90,
+  "connect_ms": 22.965,
+  "write_wall_s": 2.974,
+  "eof_at_s": 3.000,
+  "exit_after_eof_s": 0.101,
+  "wall_s": 3.101,
+  "write_error": null,
+  "late_max_ms": 618.6,
+  "late_over_budget_frames": 24,
+  "write_wait_ms": {"avg":7.571,"p50":0.409,"p95":0.614,"max":644.236},
+  "packets_sum": 90,
+  "ffmpeg_exit": 0,
+  "segments": [{"path":"C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1bout\\s1b_eof_rep2\\out_00000.mkv","duration":3.067,"packets":90,"codec":"h264"}]
+}

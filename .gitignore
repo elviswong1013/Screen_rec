@@ -1,0 +1,40 @@
+# --- OS ---
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# --- IDE ---
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# --- 构建产物（按最终技术栈在 SDD 阶段细化）---
+bin/
+obj/
+out/
+build/
+dist/
+target/
+node_modules/
+
+# --- 临时与日志 ---
+tmp/
+*.log
+.pytest_tmp*/
+
+# 保留 spike 原始证据日志（S2/S3）
+!docs/spikes/**/raw/*.log
+
+# --- Tauri 构建时生成的 schema（tauri-build 自动产出）---
+src-tauri/gen/
+
+# --- S2 spike: FFmpeg sidecar binaries (not committed) ---
+tools/ffmpeg/
+
+# --- S3 spike: repo-local portable Rust toolchain (not committed) ---
+tools/spikes/s3/toolchain/
+tools/rust/
+tools/spikes/*/toolchain/
+tools/spikes/*/target/

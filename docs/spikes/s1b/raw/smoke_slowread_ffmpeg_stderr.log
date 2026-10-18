@@ -1,0 +1,17 @@
+Input #0, rawvideo, from '\\.\pipe\screenrec_s1b_smoke_slowread':
+  Duration: N/A, start: 0.000000, bitrate: 746496 kb/s
+  Stream #0:0: Video: rawvideo (NV12 / 0x3231564E), nv12, 1920x1080, 746496 kb/s, 30 tbr, 30 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (rawvideo (native) -> h264 (h264_qsv))
+[h264_qsv @ 000002412cc31540] Using the constant quantization parameter (CQP) by default. Please use the global_quality option and other options for a quality-based mode or the b option and other options for a bitrate-based mode if the default is not the desired choice.
+[segment @ 000002412cc302c0] Opening 'C:\Users\elvis\AppData\Local\Temp\opencode\s1bout\smoke_slowread\out_00000.mkv' for writing
+Output #0, segment, to 'C:\Users\elvis\AppData\Local\Temp\opencode\s1bout\smoke_slowread\out_%05d.mkv':
+  Metadata:
+    encoder         : Lavf63.10.100
+  Stream #0:0: Video: h264, nv12(tv, progressive), 1920x1080, q=2-31, 30 fps, 1k tbn
+    Metadata:
+      encoder         : Lavc63.20.100 h264_qsv
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+frame=   14 fps= 13 q=26.0 size=N/A time=00:00:00.36 bitrate=N/A speed=0.352x elapsed=0:00:01.04    frame=   19 fps= 12 q=34.0 size=N/A time=00:00:00.53 bitrate=N/A speed=0.343x elapsed=0:00:01.55    frame=   24 fps= 12 q=35.0 size=N/A time=00:00:00.70 bitrate=N/A speed=0.338x elapsed=0:00:02.07    frame=   28 fps= 11 q=35.0 size=N/A time=00:00:00.83 bitrate=N/A speed=0.322x elapsed=0:00:02.58    frame=   31 fps= 10 q=34.0 size=N/A time=00:00:00.93 bitrate=N/A speed=0.302x elapsed=0:00:03.09    frame=   35 fps=9.7 q=34.0 size=N/A time=00:00:01.06 bitrate=N/A speed=0.295x elapsed=0:00:03.61    frame=   39 fps=9.5 q=34.0 size=N/A time=00:00:01.20 bitrate=N/A speed=0.291x elapsed=0:00:04.12    frame=   43 fps=9.2 q=34.0 size=N/A time=00:00:01.33 bitrate=N/A speed=0.287x elapsed=0:00:04.65    frame=   47 fps=9.1 q=34.0 size=N/A time=00:00:01.46 bitrate=N/A speed=0.284x elapsed=0:00:05.16    [out#0/segment @ 000002412cbd5640] video:629KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=   60 fps= 11 q=35.0 Lsize=N/A time=00:00:01.90 bitrate=N/A speed=0.343x elapsed=0:00:05.53    

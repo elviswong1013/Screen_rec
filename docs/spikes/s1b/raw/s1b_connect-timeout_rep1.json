@@ -1,0 +1,17 @@
+{
+  "case": "connect-timeout",
+  "label": "s1b_connect-timeout_rep1",
+  "decoy_cmd": "ffmpeg -hide_banner -nostdin -f lavfi -i testsrc2=size=1920x1080:rate=30 -t 60 -c:v h264_qsv -y C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1bout\\s1b_connect-timeout_rep1\\decoy_%05d.mkv",
+  "phase1_connect": {"dur_s":5.000,"err":{"code":-2147023901,"name":"OS_2147943395"}},
+  "decoy_exit": 0,
+  "phase1_wall_s": 5.006,
+  "phase2_reuse": "disconnect_res=ok; connect_dur=0.018s; connect_err=None",
+  "reuse_frames_written": 30,
+  "reuse_ffmpeg_exit": 0,
+  "reuse_segments": [{"path":"C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1bout\\s1b_connect-timeout_rep1\\decoy_%05d.mkv","duration":60.000,"packets":1800,"codec":"h264"},{"path":"C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1bout\\s1b_connect-timeout_rep1\\out_00000.mkv","duration":1.067,"packets":30,"codec":"h264"}],
+  "phase3_recreate": "skipped (reuse succeeded)",
+  "recreate_ok": true,
+  "recreate_frames_written": 0,
+  "recreate_ffmpeg_exit": null,
+  "ffmpeg_cmd_reader": "ffmpeg -hide_banner -nostdin -f rawvideo -pix_fmt nv12 -s 1920x1080 -framerate 30 -i \\\\.\\pipe\\screenrec_s1b_s1b_connect-timeout_rep1 -c:v h264_qsv -g 60 -f segment -segment_time 5 -reset_timestamps 1 -segment_format matroska -y C:\\Users\\elvis\\AppData\\Local\\Temp\\opencode\\s1bout\\s1b_connect-timeout_rep1\\out_%05d.mkv"
+}

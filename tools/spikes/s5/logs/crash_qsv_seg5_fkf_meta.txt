@@ -1,0 +1,2 @@
+﻿spawn_pid=96120 start_wall=2026-10-16T00:15:00.0106956+08:00
+kill_wall=2026-10-16T00:15:13.0239528+08:00 kill_cmd='taskkill /F /PID 96120' taskkill_output=SUCCESS: The process with PID 96120 has been terminated. reap_ms=43 exit_code=1

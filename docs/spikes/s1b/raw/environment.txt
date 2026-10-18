@@ -1,0 +1,17 @@
+﻿=== ffmpeg ===
+ffmpeg version N-127564-g3c92f003c7-20261015 Copyright (c) 2000-2026 the FFmpeg developers
+built with gcc 16.2.0 (crosstool-NG 1.29.0.7_b1a94f6)
+=== rustc/cargo ===
+rustc 1.99.0 (b940084d7 2026-09-28)
+cargo 1.99.0 (5f94df478 2026-08-27)
+=== OS ===
+
+
+Caption     : Microsoft Windows 11 專業版
+Version     : 10.0.26200
+BuildNumber : 26200
+
+
+
+=== CPU ===
+Intel(R) Core(TM) Ultra 7 270K Plus

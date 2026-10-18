@@ -1,0 +1,2 @@
+﻿spawn_pid=8276 start_wall=2026-10-16T00:08:36.6704198+08:00
+grace_wall=2026-10-16T00:08:49.6829029+08:00 stdin='q' exit_wait_ms=561 exit_code=0

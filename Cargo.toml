@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+# 模块划分见 specs/001-screen-recorder.md §3.2
+members = [
+    "crates/sr-core",
+    "crates/sr-enum",
+    "crates/sr-capture",
+    "crates/sr-audio",
+    "crates/sr-pipeline",
+    "crates/sr-shot",
+    "crates/sr-merge",
+    "src-tauri",
+    "tests/sr-itests",
+    "tools/tone_player",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# M3 管线热点数值路径在 dev/test profile 下同样须满足实时契约（30fps 帧槽，
+# REQ-9/10；S1 实测 release ≈6.6ms/帧）。dev 默认 opt-level=0 会使 BGRA→NV12/
+# 缩放退化为 ~150ms/帧（实测），故仅对热点数值包启用优化（语义不变，仅编译
+# 优化；生产行为以 release 为准）。
+[profile.dev.package.sr-capture]
+opt-level = 2
+
+[profile.dev.package.fast_image_resize]
+opt-level = 3

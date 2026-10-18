@@ -1,0 +1,24 @@
+# cargo-deny 许可与来源审计配置（REQ-29：cargo deny 仅覆盖 Rust 依赖；
+# ffmpeg 锁定构建的 buildconf/校验和/许可文本由 `sidecar::audit_locked_build` 另行核验）。
+#
+# 白名单 = 工作区声明（MIT OR Apache-2.0）与既有锁定依赖的传递许可集合；
+# GPL/AGPL 系一律不入白名单（spec §1：GPL 组件禁入发布物）。
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "Unlicense",
+    "MPL-2.0",
+    "CC0-1.0",
+    "0BSD",
+    "BSL-1.0",
+    "OpenSSL",
+]
+confidence-threshold = 0.8

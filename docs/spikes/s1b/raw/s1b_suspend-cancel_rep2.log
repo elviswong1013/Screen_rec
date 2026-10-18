@@ -1,0 +1,7 @@
+﻿CMD: pipefault --case suspend-cancel --label s1b_suspend-cancel_rep2 --seconds 10 --suspend-at 4 --cancel-write-at 6.5
+START: 2026-10-16T00:54:27.5970423+08:00
+pipefault case=suspend-cancel label=s1b_suspend-cancel_rep2 seconds=10 fps=30 pipe_buf=4194304
+JSON: C:\Users\elvis\Documents\From MSI\git_repository\Screen_rec\docs\spikes\s1b\raw\s1b_suspend-cancel_rep2.json
+DONE case=suspend-cancel
+RESULT: label=s1b_suspend-cancel_rep2 exit=0 elapsed_s=7.09
+PROBE: frames_written=129 packets_sum=129 ffmpeg_exit=0 write_error={"frame":129,"code":995,"name":"ERROR_OPERATION_ABORTED"}

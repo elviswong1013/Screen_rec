@@ -1,0 +1,24 @@
+﻿CMD: ffmpeg -hide_banner -nostdin -f lavfi -i testsrc2=size=1920x1080:rate=30 -t 10 -g 60 -force_key_frames expr:gte(t,n_forced*5) -c:v h264_mf -y C:\Users\elvis\AppData\Local\Temp\opencode\s2out\kf_h264_mf.mkv
+START: 2026-10-15T23:29:35.8088009+08:00
+Input #0, lavfi, from 'testsrc2=size=1920x1080:rate=30':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, yuv420p, 1920x1080 [SAR 1:1 DAR 16:9], 30 fps, 30 tbr, 30 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> h264 (h264_mf))
+[h264_mf @ 00000200ff740080] MFT name: 'H264 Encoder MFT'
+Output #0, matroska, to 'C:\Users\elvis\AppData\Local\Temp\opencode\s2out\kf_h264_mf.mkv':
+  Metadata:
+    encoder         : Lavf63.10.100
+  Stream #0:0: Video: h264 (H264 / 0x34363248), yuv420p(progressive), 1920x1080 [SAR 1:1 DAR 16:9], q=2-31, 200 kb/s, 30 fps, 1k tbn
+    Metadata:
+      encoder         : Lavc63.20.100 h264_mf
+frame=  266 fps=0.0 q=-0.0 size=    2560KiB time=00:00:08.86 bitrate=2365.2kbits/s speed=  17x elapsed=0:00:00.52    
+[out#0/matroska @ 00000200fe930ec0] video:3487KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.081963%
+frame=  300 fps=0.0 q=-0.0 Lsize=    3490KiB time=00:00:10.00 bitrate=2859.2kbits/s speed=18.1x elapsed=0:00:00.55    
+RESULT: tag=kf_h264_mf enc=h264_mf exit=0 elapsed_s=0.86 out_bytes=3574049 speed=18.1 first_error=
+== ffprobe C:\Users\elvis\AppData\Local\Temp\opencode\s2out\kf_h264_mf.mkv ==
+duration=10.000000
+stream=h264,1920,1080,30/1,300
+keyframe_count=6
+keyframes=0.000000 2.000000 4.000000 5.000000 7.000000 9.000000
+max_keyframe_gap_s=2

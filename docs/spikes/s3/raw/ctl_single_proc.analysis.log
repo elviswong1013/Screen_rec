@@ -1,0 +1,10 @@
+﻿BASIC file=C:\Users\elvis\AppData\Local\Temp\opencode\s3run\ctl_single_proc.wav rate=48000 channels=2 bits=32 format=Float
+BASIC frames=192000 duration_s=4.000000
+BASIC peak_dbfs=-21.07 rms_dbfs=-24.12
+FFT nfft=32768 bin_hz=1.464844 frames=9 window=hann skip_start_s=0.25 skip_end_s=0.25
+TONE freq=440.0 peak_at=439.453 db_fs=-21.86 db_rel_ref=0.00
+TONE freq=880.0 peak_at=874.512 db_fs=-180.07 db_rel_ref=-158.21
+FLOOR band=100-6000Hz excl_targets_pm10Hz median_db_fs=-198.32 median_db_rel_ref=-176.46
+GLOBAL_PEAK freq=439.453 db_fs=-21.86
+LEAK freq=880.0 rel_db=-158.21 limit_db=-40.00 ok
+VERDICT ref=440.0 threshold_db=-40.00 PASS
