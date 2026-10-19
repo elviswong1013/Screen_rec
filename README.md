@@ -130,6 +130,7 @@
 - [SDD 评审记录](docs/reviews/001-sdd-review-2026-10-15.md)
 - [里程碑证据目录](docs/milestones/)
 - [Spike 报告目录](docs/spikes/)
+- [工程合规文档（草案/候选）](docs/compliance/README.md)
 
 ## 证据与官方引用
 

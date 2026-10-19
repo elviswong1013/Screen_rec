@@ -1,0 +1,1507 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "Screen_rec FFmpeg partial SBOM (2026-10-19)",
+  "documentNamespace": "https://screen-rec.invalid/spdx/ffmpeg-partial-20261019",
+  "creationInfo": {
+    "created": "2026-10-19T00:00:00Z",
+    "creators": [
+      "Organization: Screen_rec",
+      "Tool: opencode-backup-executor"
+    ],
+    "comment": "Partial engineering SBOM; not a legal opinion and not evidence of complete compliance. Direct component set is based on ffmpeg -buildconf. BtbN static dependency closure is not fully parsed."
+  },
+  "documentDescribes": [
+    "SPDXRef-Package-ScreenRec-Internal-Test-Bundle"
+  ],
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-ScreenRec-Internal-Test-Bundle",
+      "name": "Screen_rec internal test bundle",
+      "versionInfo": "0.1.0 (internal test, 2026-10-19)",
+      "supplier": "Organization: Screen_rec",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "F3A42C4E304FAECCFBF2410A58A4ACB6D486DB3443E510C4E8B252FEF3B14F2F"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Partial SBOM root package. Installer hash from docs/milestones/ffmpeg-lgpl-package-report.md. Internal test package, not a formal release. The bundle contains ffmpeg.exe, ffprobe.exe and license texts; see contained FFmpeg package."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-FFmpeg-Build",
+      "name": "FFmpeg",
+      "versionInfo": "n8.1.3-18-g46d899d7a0-20261019",
+      "supplier": "Organization: Screen_rec",
+      "originator": "Organization: FFmpeg project",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "LGPL-3.0-or-later",
+      "licenseDeclared": "LGPL-3.0-or-later",
+      "copyrightText": "Copyright (c) 2000-2026 the FFmpeg developers",
+      "sourceInfo": "Built from FFmpeg commit 46d899d7a02bc63237472cc4897258d5ddf274ac in ghcr.io/btbn/ffmpeg-builds/win64-lgpl-8.1@sha256:a0ac6b9b3b89cf1f3f0b6cb3556dceb6b6acec22946b4d8f79af516099b920fa. Per the build script/source offer, the custom configure removed only --enable-chromaprint; no --enable-gpl and no --enable-nonfree are present. Build script: src-tauri/resources/licenses/ffmpeg-build-script.sh. ffmpeg.exe SHA-256 3091264B90D26398E0366B0E422E16FD76D2ECF85868E4F072209721E7C793F3; ffprobe.exe SHA-256 CB47EFF47532A4F5CE8F3A0FB76FDED41BD401D168C61C7DD187EBBC318B8CAD.",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/FFmpeg/FFmpeg@46d899d7a02bc63237472cc4897258d5ddf274ac"
+        }
+      ],
+      "comment": "Custom LGPL build containing ffmpeg.exe and ffprobe.exe. License confirmed locally by bundled LGPLv3 text, ffmpeg -L and --enable-version3. No --enable-gpl/--enable-nonfree and no chromaprint/FFTW in the current buildconf. Corresponding source archive and exact BtbN scripts.d/patches are not bundled. ffprobe.exe is assumed to share the same build and static dependency set; not separately itemized."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-FFmpeg-Source",
+      "name": "FFmpeg source",
+      "versionInfo": "46d899d7a02bc63237472cc4897258d5ddf274ac",
+      "supplier": "Organization: FFmpeg project",
+      "originator": "Organization: FFmpeg project",
+      "downloadLocation": "git+https://github.com/FFmpeg/FFmpeg@46d899d7a02bc63237472cc4897258d5ddf274ac",
+      "filesAnalyzed": false,
+      "licenseConcluded": "LGPL-3.0-or-later",
+      "licenseDeclared": "LGPL-3.0-or-later",
+      "copyrightText": "Copyright (c) 2000-2026 the FFmpeg developers",
+      "comment": "Corresponding source locator only. No local source archive or SHA-256 is bundled. Upstream LICENSE.md, COPYING.GPLv3 and COPYING.LGPLv3 should be obtained. BtbN patch status is not proven.",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/FFmpeg/FFmpeg@46d899d7a02bc63237472cc4897258d5ddf274ac"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-Package-BtbN-Build-Image",
+      "name": "ghcr.io/btbn/ffmpeg-builds/win64-lgpl-8.1",
+      "versionInfo": "sha256:a0ac6b9b3b89cf1f3f0b6cb3556dceb6b6acec22946b4d8f79af516099b920fa",
+      "supplier": "Organization: BtbN",
+      "downloadLocation": "https://ghcr.io/btbn/ffmpeg-builds/win64-lgpl-8.1@sha256:a0ac6b9b3b89cf1f3f0b6cb3556dceb6b6acec22946b4d8f79af516099b920fa",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a0ac6b9b3b89cf1f3f0b6cb3556dceb6b6acec22946b4d8f79af516099b920fa"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Base image digest recorded in ffmpeg-source-offer.txt. ffmpeg-build-info.txt records only ':latest', so this digest is documentary and was not verified against the build in this pass. Exact BtbN repo commit, scripts.d, patches and dependency lock are not available."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libopenh264",
+      "name": "libopenh264",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libopenh264). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-2-Clause per Lane3/upstream LICENSE; no patent grant. Patent/royalty status unresolved. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-liblcevc-dec",
+      "name": "liblcevc-dec",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-liblcevc-dec). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): Clear BSD per Lane3/upstream LICENSE; upstream states no patent license. Patent pool status unresolved. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libmp3lame",
+      "name": "libmp3lame",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libmp3lame). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): LGPL-2.0 per Lane3/upstream COPYING; local text not bundled. LGPL static relink question applies if distributed."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libbluray",
+      "name": "libbluray",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libbluray). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): LGPL-2.1 per Lane3/upstream COPYING; local text not bundled. Transitive libudfread is listed separately. LGPL static relink question applies."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libplacebo",
+      "name": "libplacebo",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libplacebo). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): LGPL-2.1 per Lane3/upstream LICENSE; local text not bundled. LGPL static relink question applies. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libaom",
+      "name": "libaom",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libaom). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-2-Clause plus AOM patent grant per Lane3/upstream LICENSE. Patent scope unresolved. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libvpx",
+      "name": "libvpx",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libvpx). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-3-Clause per Lane3/upstream LICENSE. Patent scope unresolved. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libsvtav1",
+      "name": "libsvtav1",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libsvtav1). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-3-Clause Clear per Lane3/upstream LICENSE. Patent scope unresolved. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libdav1d",
+      "name": "libdav1d",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libdav1d). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-2-Clause per Lane3/upstream LICENSE. Patent scope unresolved. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-librav1e",
+      "name": "librav1e",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-librav1e). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-2-Clause per Lane3/upstream LICENSE. Rust crate closure not itemized. Patent scope unresolved. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libvvenc",
+      "name": "libvvenc",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libvvenc). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): expected BSD-3-Clause per Lane3 but upstream text not captured. VVC patent pool unresolved. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libkvazaar",
+      "name": "libkvazaar",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libkvazaar). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-3-Clause per Lane3/upstream LICENSE. HEVC patent pool unresolved. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libuavs3d",
+      "name": "libuavs3d",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libuavs3d). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-3-style per Lane3/upstream COPYING. AVS3 patent/standard licensing unresolved. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-liboapv",
+      "name": "liboapv",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-liboapv). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-3-style per Lane3/upstream LICENSE. APV patent/standard licensing unresolved. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libjxl",
+      "name": "libjxl",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libjxl). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-3-Clause per Lane3/upstream LICENSE; brotli MIT; highway/skcms not captured. Transitive packages listed separately. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libvmaf",
+      "name": "libvmaf",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libvmaf). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-2-Clause-Patent per Lane3/upstream LICENSE. VMAF model files/licensing not itemized. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-amf",
+      "name": "amf",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-amf). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Build-time headers plus runtime AMF driver; not a redistributed library. License lead expected MIT, upstream text not captured."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-cuda-llvm",
+      "name": "cuda-llvm",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-cuda-llvm). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Build-time CUDA/LLVM toolchain feature; NVIDIA EULA terms not captured. Not redistributed as a library."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-ffnvcodec",
+      "name": "ffnvcodec",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-ffnvcodec). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Header-only NVENC/NVDEC build dependency; runtime provided by NVIDIA driver. License lead expected MIT, upstream text not captured."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-fontconfig",
+      "name": "fontconfig",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-fontconfig). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): MIT-style per Lane3/upstream COPYING; local text not bundled. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-gmp",
+      "name": "gmp",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-gmp). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Dual GPLv3/LGPLv3 lead per Lane3/upstream COPYING; build did not record which branch was used. LGPL static relink/combined-work question depends on branch."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libiconv",
+      "name": "libiconv",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-iconv). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): LGPL-2.1+ per Lane3 but upstream text not captured. LGPL static relink question applies if confirmed."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-lcms2",
+      "name": "lcms2",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-lcms2). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): MIT per Lane3/upstream COPYING; local text not bundled. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libaribb24",
+      "name": "libaribb24",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libaribb24). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead expected LGPL but upstream text not captured. LGPL static relink question applies if confirmed. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libaribcaption",
+      "name": "libaribcaption",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libaribcaption). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead expected MIT but upstream text not captured. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libass",
+      "name": "libass",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libass). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): ISC per Lane3/upstream COPYING. Transitive libunibreak listed separately. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libfreetype",
+      "name": "libfreetype",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libfreetype). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Dual FTL/GPLv2 lead per Lane3/upstream docs; build did not record which branch was used. Branch choice changes obligations."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libfribidi",
+      "name": "libfribidi",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libfribidi). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): LGPL-2.1 per Lane3/upstream COPYING. LGPL static relink question applies. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libgme",
+      "name": "libgme",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libgme). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead expected LGPL but upstream text not captured. LGPL static relink question applies if confirmed. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libharfbuzz",
+      "name": "libharfbuzz",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libharfbuzz). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): Old MIT per Lane3/upstream COPYING. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libopencore-amrnb",
+      "name": "libopencore-amrnb",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libopencore-amrnb). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): Apache-2.0 per Lane3/upstream LICENSE; NOTICE file not bundled. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libopencore-amrwb",
+      "name": "libopencore-amrwb",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libopencore-amrwb). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): Apache-2.0 per Lane3/upstream LICENSE; NOTICE file not bundled. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libopenjpeg",
+      "name": "libopenjpeg",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libopenjpeg). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-2-Clause per Lane3/upstream LICENSE. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libopenmpt",
+      "name": "libopenmpt",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libopenmpt). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-3-Clause per Lane3/upstream LICENSE. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libopus",
+      "name": "libopus",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libopus). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-3-Clause per Lane3/upstream LICENSE. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-librist",
+      "name": "librist",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-librist). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. librist license not captured; transitive mbedTLS is Apache-2.0 or GPL-2.0+ per Lane3. Branch choice not recorded. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-librsvg",
+      "name": "librsvg",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-librsvg). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): LGPL-2.1+ per Lane3/upstream COPYING. Transitive glib/cairo/pango listed; Rust crate closure not itemized. LGPL static relink question applies."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libshaderc",
+      "name": "libshaderc",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libshaderc). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): Apache-2.0 per Lane3/upstream LICENSE; NOTICE not bundled. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libsnappy",
+      "name": "libsnappy",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libsnappy). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-3-Clause per Lane3/upstream COPYING. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libsoxr",
+      "name": "libsoxr",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libsoxr). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): LGPL-2.1 per Lane3/upstream COPYING. LGPL static relink question applies. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libsrt",
+      "name": "libsrt",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libsrt). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): MPL-2.0 per Lane3/upstream LICENSE. Source for MPL-covered files not provided. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libssh",
+      "name": "libssh",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libssh). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License not covered by Lane3; no local text. Treat as NOASSERTION until upstream LICENSE/COPYING is obtained. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libtheora",
+      "name": "libtheora",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libtheora). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-3-Clause per Lane3/upstream LICENSE. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libtwolame",
+      "name": "libtwolame",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libtwolame). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): LGPL-2.1 per Lane3/upstream COPYING. LGPL static relink question applies. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libvorbis",
+      "name": "libvorbis",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libvorbis). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-3-Clause per Lane3/upstream LICENSE. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libvpl",
+      "name": "libvpl",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libvpl). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): MIT per Lane3/upstream LICENSE. Static vs runtime dispatcher form not verified. Indirectly used by h264_qsv."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libwebp",
+      "name": "libwebp",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libwebp). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): BSD-3-Clause per Lane3/upstream LICENSE. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libxml2",
+      "name": "libxml2",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libxml2). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): MIT per Lane3/upstream COPYING. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libzimg",
+      "name": "libzimg",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libzimg). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): WTFPL-2 per Lane3/upstream LICENSE. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libzmq",
+      "name": "libzmq",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libzmq). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): MPL-2.0 per Lane3/upstream LICENSE. Source for MPL-covered files not provided. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libzvbi",
+      "name": "libzvbi",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-libzvbi). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead expected LGPL but upstream text not captured. LGPL static relink question applies if confirmed. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-lv2",
+      "name": "lv2",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-lv2). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): ISC-style per Lane3/upstream COPYING. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-lzma",
+      "name": "lzma",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-lzma). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead public-domain per Lane3 but upstream text not captured. Not called directly by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-openal",
+      "name": "openal",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-openal). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): LGPL-2.0 per Lane3/upstream COPYING. LGPL static relink question applies. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-opencl",
+      "name": "opencl",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-opencl). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead (not a conclusion): Apache-2.0 per Lane3/upstream LICENSE. Loader distribution form not verified. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-schannel",
+      "name": "schannel",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-schannel). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Windows OS component; not redistributed. No third-party license text required from this bundle, but OS terms apply."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-sdl2",
+      "name": "sdl2",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-sdl2). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead zlib per Lane3/upstream LICENSE. Enabled for ffplay; ffplay.exe is not included in the current NSIS installer. Obligations would change if the full zip is distributed."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-vaapi",
+      "name": "vaapi",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-vaapi). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead expected MIT but upstream text not captured. Link/runtime form not verified. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-vapoursynth",
+      "name": "vapoursynth",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-vapoursynth). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License not captured; runtime loading assumed but not verified. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-vulkan",
+      "name": "vulkan",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-vulkan). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead Apache-2.0 mostly per Lane3/upstream docs. Loader distribution form not verified. Not called by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-zlib",
+      "name": "zlib",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-zlib). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. License lead zlib per Lane3/upstream LICENSE. Local text not bundled. Not called directly by Screen_rec."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-winpthreads",
+      "name": "winpthreads / MinGW-w64 runtime",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--enable-pthreads). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Inferred from --enable-pthreads and MinGW-w64 toolchain. Exact runtime components (winpthreads/libgcc/libstdc++) are not itemized. License texts not bundled."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libgomp",
+      "name": "libgomp\uff08GCC OpenMP runtime\uff09",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Component/feature present per ffmpeg -buildconf (--extra-libs=-lgomp). Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. From --extra-libs=-lgomp. GCC Runtime Library Exception text is not bundled. Exact libgomp/toolchain source/version not itemized."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-glib",
+      "name": "glib",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Known transitive dependency (transitive: librsvg -> glib); it is not directly listed by ffmpeg -buildconf. Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Known transitive dependency of librsvg (Lane3/BtbN scripts). LGPL-2.1+ lead; local text not bundled. Full closure (pcre2/libffi/zlib etc.) not fully itemized."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-cairo",
+      "name": "cairo",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Known transitive dependency (transitive: librsvg -> cairo); it is not directly listed by ffmpeg -buildconf. Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Known transitive dependency of librsvg. License not captured; NOASSERTION until upstream COPYING is obtained."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-pango",
+      "name": "pango",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Known transitive dependency (transitive: librsvg -> pango); it is not directly listed by ffmpeg -buildconf. Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Known transitive dependency of librsvg. License lead Library GPL v2 per Lane3; local text not bundled. LGPL static relink question applies."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libudfread",
+      "name": "libudfread",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Known transitive dependency (transitive: libbluray -> libudfread); it is not directly listed by ffmpeg -buildconf. Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Known transitive dependency of libbluray. License not captured; NOASSERTION until upstream COPYING is obtained."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-mbedtls",
+      "name": "mbedTLS",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Known transitive dependency (transitive: librist -> mbedTLS); it is not directly listed by ffmpeg -buildconf. Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Known transitive dependency of librist. Dual Apache-2.0/GPL-2.0+ lead per Lane3; branch choice not recorded. Legal obligations depend on branch."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libunibreak",
+      "name": "libunibreak",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Known transitive dependency (transitive: libass -> libunibreak); it is not directly listed by ffmpeg -buildconf. Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Known transitive dependency of libass. License not captured; NOASSERTION until upstream COPYING is obtained."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-brotli",
+      "name": "brotli",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Known transitive dependency (transitive: libjxl -> brotli); it is not directly listed by ffmpeg -buildconf. Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Known transitive dependency of libjxl. MIT lead per Lane3; local text not bundled."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-highway",
+      "name": "highway",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Known transitive dependency (transitive: libjxl -> highway); it is not directly listed by ffmpeg -buildconf. Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Known transitive dependency of libjxl. License not captured; NOASSERTION until upstream LICENSE is obtained."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-skcms",
+      "name": "skcms",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Known transitive dependency (transitive: libjxl -> skcms); it is not directly listed by ffmpeg -buildconf. Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Known transitive dependency of libjxl. License not captured; NOASSERTION until upstream LICENSE is obtained."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-pcre2",
+      "name": "pcre2",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Known transitive dependency (transitive: glib -> pcre2); it is not directly listed by ffmpeg -buildconf. Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Known transitive dependency of glib per Lane3. License not captured; NOASSERTION until upstream LICENSE is obtained."
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Component-libffi",
+      "name": "libffi",
+      "versionInfo": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "originator": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Known transitive dependency (transitive: glib -> libffi); it is not directly listed by ffmpeg -buildconf. Exact version/commit, license text, source archive, patches/build scripts are not locally available; licenseConcluded/Declared are NOASSERTION. Known transitive dependency of glib per Lane3. License not captured; NOASSERTION until upstream LICENSE is obtained."
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libopenh264"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-liblcevc-dec"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libmp3lame"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libbluray"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libplacebo"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libaom"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libvpx"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libsvtav1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libdav1d"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-librav1e"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libvvenc"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libkvazaar"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libuavs3d"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-liboapv"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libjxl"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libvmaf"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-amf"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-cuda-llvm",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-FFmpeg-Build"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-ffnvcodec",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-FFmpeg-Build"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-fontconfig"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-gmp"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libiconv"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-lcms2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libaribb24"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libaribcaption"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libass"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libfreetype"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libfribidi"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libgme"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libharfbuzz"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libopencore-amrnb"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libopencore-amrwb"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libopenjpeg"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libopenmpt"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libopus"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-librist"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-librsvg"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libshaderc"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libsnappy"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libsoxr"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libsrt"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libssh"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libtheora"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libtwolame"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libvorbis"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libvpl"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libwebp"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libxml2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libzimg"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libzmq"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libzvbi"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-lv2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-lzma"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-openal"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-opencl"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-schannel",
+      "relationshipType": "RUNTIME_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-FFmpeg-Build"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-sdl2",
+      "relationshipType": "OPTIONAL_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-FFmpeg-Build"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-vaapi"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-vapoursynth"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-vulkan"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-zlib"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-winpthreads"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libgomp"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-glib"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-cairo"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-pango"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libudfread"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-mbedtls"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libunibreak"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-brotli"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-highway"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-skcms"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-pcre2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libffi"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-librsvg",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-glib"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-librsvg",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-cairo"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-librsvg",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-pango"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-libbluray",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libudfread"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-librist",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-mbedtls"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-libass",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libunibreak"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-libjxl",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-brotli"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-libjxl",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-highway"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-libjxl",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-skcms"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-glib",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-pcre2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Component-glib",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Component-libffi"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-ScreenRec-Internal-Test-Bundle"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ScreenRec-Internal-Test-Bundle",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-FFmpeg-Build"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-FFmpeg-Build",
+      "relationshipType": "GENERATED_FROM",
+      "relatedSpdxElement": "SPDXRef-Package-FFmpeg-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-BtbN-Build-Image",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-FFmpeg-Build"
+    }
+  ],
+  "documentComment": "PARTIAL SBOM. The current ffmpeg.exe/ffprobe.exe are custom BtbN LGPL builds (n8.1.3-18-g46d899d7a0-20261019, commit 46d899d7a02bc63237472cc4897258d5ddf274ac). Per the build script/source offer, only --enable-chromaprint was removed; chromaprint and FFTW are absent from the current buildconf/muxers. FFmpeg license is LGPL-3.0-or-later per local text and buildconf; only the FFmpeg package has a locally confirmed license. All external component packages use NOASSERTION because per-component LICENSE/COPYING, exact versions, source archives, patches/build scripts and NOTICE files are not locally available. The 63 direct component/feature packages are confirmed present by -buildconf; 11 additional transitive packages are known examples from Lane3/BtbN scripts, not a complete closure. ffplay.exe/SDL2 are not in the current NSIS installer. Not a legal opinion; formal release requires upstream/BtbN materials and counsel review."
+}
