@@ -4,7 +4,7 @@
 
 它同时保留截图、录屏、录音的基础能力；重点不是直播或剪辑全家桶，而是本地“多目标、各自成品、可恢复、可归档”的录制流程。基础能力包括全屏/窗口/区域截图、屏幕/区域视频录制、麦克风/系统/按应用录音；下面的比较重点放在多目标录制这条主线上。
 
-以下能力快照截至 2026-10-19，基于已交付的 M17 开发版，并包含 M18 区域视频的源码验收：MP4 的系统播放器人工项仍待签，P5 内容区尚未实施。M18 尚未重新打包，当前安装包仍为 M17e；详见「项目状态」。
+以下能力快照截至 2026-10-19，基于已交付的 M17 开发版，并包含 M18 区域视频的源码验收：MP4 的系统播放器人工项仍待签，P5 内容区尚未实施。M18 与 FFmpeg LGPL 整改已打入内部测试包（2026-10-19）；该包未签名、未清权，不是正式发行版；详见「项目状态」。
 
 **结论先说**：这些能力拆开看并非市场独有。OBS 可以通过 Application Audio Capture、多音轨、Source Record 插件或多实例做出相近的独立输出；Cap、ShareX、Game Bar、Snipping Tool 各有更强的场景。Screen_rec 的差异在**单 GUI 整合**：多目标独立成品 + 每路按进程树选音源 + 每路独立生命周期 + 分段恢复 + 事后多轨封装。
 
@@ -102,7 +102,7 @@
 - **端点**：ContainerId 关联依赖驱动元数据；未匹配/歧义时确认或改用系统混音；录制中失效会停该路。作为便利取舍，不保证任意屏精准匹配。
 - **采样率与编码**：44.1/48/88.2/96k 可选；应用进程环回固定 48k，升采样不增加来源信息；真实 96k 捕获设备尚未验证。高率 AAC/MP4 有 Windows 播放器兼容风险，AC-8 人工项待签。编码器按 NVENC→QSV→AMF→MF 候选探测，本机已测 QSV/MF，不保证全部机器/品牌可用。
 - **容器**：默认 MKV；MP4 为内部 MKV 分段 → 收尾 stream-copy remux；纯录音 WAV。不是所有播放器/编辑链都适合多轨 MKV。
-- **安全与分发**：尚未做安全审计；NSIS 安装包未签名；不把 Rust/Tauri 当作性能证据。FFmpeg 的 chromaprint/FFTW GPL 冲突已移除；Rust 第三方通知、静态组件通知、编解码专利与正式发行条款仍未完成清权；当前安装包（M17e）仅供内部测试，不应作为正式发行版。
+- **安全与分发**：尚未做安全审计；NSIS 安装包未签名；不把 Rust/Tauri 当作性能证据。FFmpeg 的 chromaprint/FFTW GPL 冲突已移除；Rust 第三方通知、静态组件通知、编解码专利与正式发行条款仍未完成清权；当前内部测试包（含 M18 + FFmpeg LGPL 整改）不应作为正式发行版。
 - **验收范围**：L3 的负坐标显示器、真实麦克风、多视频轨播放器兼容矩阵仍未签；本机无麦克风设备导致的 BLOCKED 不算通过（见 `l3-signoff.md` 与 `specs/002-recording-modes.md` 第 184–187 行）。
 
 ## 项目状态
@@ -113,9 +113,9 @@
 | P1 / M15 | 采样率可选（44.1/48/88.2/96k） | **acc-8 ACCEPTED**；详见 `m15-report.md` |
 | P2 / M16 | 全屏音轨、HDMI/DP 端点关联、端点失效 | **acc-10 ACCEPTED**；详见 `m16-report.md` |
 | P3 / M17 | MP4 输出（MKV 分段 → 收尾 stream-copy remux） | 已实现；acc-13 对 acc-12 两项 P2 代码修复的复审通过；**AC-8 系统播放器人工记录仍待用户**；详见 `m17-report.md` |
-| P4 / M18 | 区域视频录制 | **acceptor ACCEPTED（2026-10-19，源码验收）**；M18 尚未重新打包；麦克风、真实 96k 捕获、多视频轨播放器矩阵仍 BLOCKED/待签；详见 `m18-report.md` |
+| P4 / M18 | 区域视频录制 | **acceptor ACCEPTED（2026-10-19，源码验收）**；已随 FFmpeg LGPL 整改内部测试包重建，未正式发布；麦克风、真实 96k 捕获、多视频轨播放器矩阵仍 BLOCKED/待签；详见 `m18-report.md` |
 | P5 | Chrome/Edge 内容区 | 仅 spike 先行，未实施；不作为现有卖点 |
-| 安装包 | M17e NSIS | 2026-10-19 重建并完成安装/自检；**仅为打包证据，不代表运行时播放器已验收**；见 `m17e-package-report.md` |
+| 安装包 | 内部测试包（M18 + FFmpeg LGPL 整改） | 2026-10-19 重建并完成安装/自检/卸载；SHA-256 `F3A42C4E…B14F2F`；**未签名、未清权，不是正式发行版**；见 `ffmpeg-lgpl-package-report.md` |
 
 规格状态：[PRD 001](docs/prd/001-screen-recorder.md)、[PRD 002](docs/prd/002-recording-modes.md) 已批准；[SDD 001](specs/001-screen-recorder.md) 已批准；[SDD 002](specs/002-recording-modes.md) 按阶段推进，P1–P4 详规已批准，P5 尚待 spike/详规评审。批准不等于实现或验收，实际状态以上表为准。
 
@@ -139,8 +139,8 @@
 - 合并实现与异构多轨：[merge.rs](crates/sr-merge/src/merge.rs)、[merge 测试](tests/sr-itests/tests/merge.rs)
 - 进程环回与端点：[wasapi.rs](crates/sr-audio/src/wasapi.rs)、[endpoint-match.js](ui/endpoint-match.js)
 - 里程碑报告：[M13](docs/milestones/m13-report.md)、[M14](docs/milestones/m14-report.md)、[M15](docs/milestones/m15-report.md)、[M16](docs/milestones/m16-report.md)、[M17](docs/milestones/m17-report.md)、[M18](docs/milestones/m18-report.md)
-- 人工签核与最新安装包：[L3 签核](docs/milestones/l3-signoff.md)、[M17e 安装包报告](docs/milestones/m17e-package-report.md)
-- FFmpeg LGPL 整改：[FFmpeg LGPL 整改报告](docs/milestones/ffmpeg-lgpl-remediation.md)
+- 人工签核与历史安装包：[L3 签核](docs/milestones/l3-signoff.md)、[M17e 安装包报告](docs/milestones/m17e-package-report.md)
+- FFmpeg LGPL 整改：[整改报告](docs/milestones/ffmpeg-lgpl-remediation.md)、[内部测试包报告](docs/milestones/ffmpeg-lgpl-package-report.md)
 - 崩溃恢复机制与实测：[S5 报告](docs/spikes/s5/s5-crash-recovery.md)
 
 ### 官方与上游资料（2026-10-19 核对）

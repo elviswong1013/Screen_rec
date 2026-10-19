@@ -7,7 +7,7 @@ PRD: `docs/prd/002-recording-modes.md`（Approved 2026-10-18）
 
 ## 1. 范围（本版本）
 
-**P1 采样率已实现**（acc-8 ACCEPTED）；**P2 全屏音轨已实现**（acc-10 ACCEPTED）；**P3 MP4 输出已实现**（acc-11/12/13 修复闭环；AC-8 人工项待用户）；**P4 区域视频已实现**（M18，2026-10-19；acceptor ACCEPTED，源码验收；安装包未重建）；P5 见 §7 占位。
+**P1 采样率已实现**（acc-8 ACCEPTED）；**P2 全屏音轨已实现**（acc-10 ACCEPTED）；**P3 MP4 输出已实现**（acc-11/12/13 修复闭环；AC-8 人工项待用户）；**P4 区域视频已实现**（M18，2026-10-19；acceptor ACCEPTED，源码验收；已随 FFmpeg LGPL 整改内部测试包重建，未正式发布）；P5 见 §7 占位。
 
 **对 001 spec 条款的保留/覆盖声明**：
 - 001 REQ-14/18（音轨身份与隔离）、REQ-19（纯录音）、REQ-26（漂移核语义：校正阈值、Hold/Track 行为）全部**保留**，仅采样率数值域参数化。
@@ -184,4 +184,4 @@ PRD: `docs/prd/002-recording-modes.md`（Approved 2026-10-18）
 | M15（P1） | 采样率可选（REQ-1..8） | **已实现，acc-8 ACCEPTED（2026-10-18）**（L1/L2 证据：`docs/milestones/m15-report.md`；audio_m6 麦克风正路径本机无采集设备 → BLOCKED） |
 | M16（P2） | 全屏音轨（REQ-9..15） | **已实现，acc-10 ACCEPTED（2026-10-18）**：acc-9 两项 P1（终态单调/Ambiguous 首项）修复后复审通过；详见 `docs/milestones/m16-report.md` |
 | M17（P3） | MP4 输出（REQ-16..20） | **已实现（acc-11/12/13 修复闭环，2026-10-19）**：container 14/14（debug）；acc-12 两项 P2 修复经 acc-13 复审通过；**AC-8 系统播放器人工记录待用户**；端点+麦克风组合因本机无采集设备 → BLOCKED；L3 见 `docs/milestones/m17-report.md` |
-| M18（P4） | 区域视频录制（REQ-21..24） | **已实现，acceptor ACCEPTED（源码验收，2026-10-19）**：L1 全绿；L2 `region_video` 10/10；E2E record（含真实 UI 隔离双应用）+ 区域截图回归全 PASS；M18b 生命周期修复后复审通过；**安装包未重建**；麦克风/真实 96k 捕获/多视频轨播放器矩阵仍 BLOCKED/待签；详见 `docs/milestones/m18-report.md` |
+| M18（P4） | 区域视频录制（REQ-21..24） | **已实现，acceptor ACCEPTED（源码验收，2026-10-19）**：L1 全绿；L2 `region_video` 10/10；E2E record（含真实 UI 隔离双应用）+ 区域截图回归全 PASS；M18b 生命周期修复后复审通过；**已随 FFmpeg LGPL 整改内部测试包重建（未正式发布）**；麦克风/真实 96k 捕获/多视频轨播放器矩阵仍 BLOCKED/待签；详见 `docs/milestones/m18-report.md` |
