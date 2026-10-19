@@ -17,7 +17,7 @@
 //!   （M0 冻结构建的锁定事实：版本标记/压缩包名/SHA256/buildconf 必含项/禁用编码器标记）。
 //! - `sr_pipeline::sidecar::audit_locked_build(ffmpeg_home: &Path, zip_path: &Path)
 //!    -> Result<BuildAudit, String>`：实际运行构建并核验压缩包校验和与许可文本。
-//! - `BuildAudit { version, zip_sha256, buildconf_hits, forbidden_hits, license_text_ok }`。
+//! - `BuildAudit { version, zip_sha256, buildconf_hits, forbidden_hits, forbidden_muxer_hits, license_text_ok }`。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -185,6 +185,11 @@ fn license_and_build_audit() {
         audit.forbidden_hits.is_empty(),
         "禁用/GPL 组件标记不得出现在构建内（得到 {:?}；spec §1 GPL 禁入）",
         audit.forbidden_hits
+    );
+    assert!(
+        audit.forbidden_muxer_hits.is_empty(),
+        "禁用 muxer 标记不得出现在构建内（得到 {:?}；chromaprint/FFTW 回归）",
+        audit.forbidden_muxer_hits
     );
     assert!(
         audit.license_text_ok,

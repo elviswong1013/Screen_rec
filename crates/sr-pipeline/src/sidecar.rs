@@ -399,12 +399,14 @@ pub struct LockedBuildFacts {
     pub required_buildconf: &'static [&'static str],
     /// 禁用/GPL 编码器标记（`-encoders` 输出中应零命中；spec §1 GPL 禁入）。
     pub forbidden_encoder_markers: &'static [&'static str],
+    /// 禁用的 muxer 标记（`-muxers` 输出中应零命中；当前用于 chromaprint/FFTW 回归）。
+    pub forbidden_muxer_markers: &'static [&'static str],
 }
 
 static LOCKED_BUILD_FACTS: LockedBuildFacts = LockedBuildFacts {
     version_marker: "n8.1",
-    zip_file_name: "ffmpeg-n8.1-latest-win64-lgpl-8.1.zip",
-    zip_sha256: "337B85465B9CD0CFCB3376B84988912C3999E3FB69BC025F0B4360B4B1C8C240",
+    zip_file_name: "ffmpeg-n8.1.3-18-g46d899d7a0-20261019-win64-lgpl.zip",
+    zip_sha256: "015EB37E45AFB52901DFF77562819A524DEEED07DDEFADDE766ABB14339BC502",
     required_buildconf: &[
         "--enable-version3",
         "--disable-libx264",
@@ -413,6 +415,7 @@ static LOCKED_BUILD_FACTS: LockedBuildFacts = LockedBuildFacts {
         "--disable-libxvid",
     ],
     forbidden_encoder_markers: &["libx264", "libx265", "libxavs2", "libxvid"],
+    forbidden_muxer_markers: &["chromaprint"],
 };
 
 /// 锁定构建冻结事实（REQ-29 审计锚点）。
@@ -430,6 +433,8 @@ pub struct BuildAudit {
     pub buildconf_hits: Vec<(String, bool)>,
     /// 禁用/GPL 编码器标记命中（应为空）。
     pub forbidden_hits: Vec<String>,
+    /// 禁用 muxer 标记命中（应为空；当前覆盖 chromaprint/FFTW）。
+    pub forbidden_muxer_hits: Vec<String>,
     /// 随包 LICENSE.txt = LGPL v3 文本。
     pub license_text_ok: bool,
 }
@@ -468,6 +473,7 @@ pub fn audit_locked_build(ffmpeg_home: &Path, zip_path: &Path) -> Result<BuildAu
     let version = run(&["-hide_banner", "-version"])?;
     let buildconf = run(&["-hide_banner", "-buildconf"])?;
     let encoders = run(&["-hide_banner", "-encoders"])?;
+    let muxers = run(&["-hide_banner", "-muxers"])?;
     let facts = locked_build_facts();
     let buildconf_hits = facts
         .required_buildconf
@@ -480,6 +486,12 @@ pub fn audit_locked_build(ffmpeg_home: &Path, zip_path: &Path) -> Result<BuildAu
         .filter(|m| encoders.contains(**m))
         .map(|m| (*m).to_string())
         .collect();
+    let forbidden_muxer_hits = facts
+        .forbidden_muxer_markers
+        .iter()
+        .filter(|m| muxers.contains(**m))
+        .map(|m| (*m).to_string())
+        .collect();
     let license_text_ok = std::fs::read_to_string(ffmpeg_home.join("LICENSE.txt"))
         .map(|t| t.contains("GNU LESSER GENERAL PUBLIC LICENSE") && t.contains("Version 3"))
         .unwrap_or(false);
@@ -488,6 +500,7 @@ pub fn audit_locked_build(ffmpeg_home: &Path, zip_path: &Path) -> Result<BuildAu
         zip_sha256: certutil_sha256(zip_path)?,
         buildconf_hits,
         forbidden_hits,
+        forbidden_muxer_hits,
         license_text_ok,
     })
 }

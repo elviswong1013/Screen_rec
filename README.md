@@ -102,7 +102,7 @@
 - **端点**：ContainerId 关联依赖驱动元数据；未匹配/歧义时确认或改用系统混音；录制中失效会停该路。作为便利取舍，不保证任意屏精准匹配。
 - **采样率与编码**：44.1/48/88.2/96k 可选；应用进程环回固定 48k，升采样不增加来源信息；真实 96k 捕获设备尚未验证。高率 AAC/MP4 有 Windows 播放器兼容风险，AC-8 人工项待签。编码器按 NVENC→QSV→AMF→MF 候选探测，本机已测 QSV/MF，不保证全部机器/品牌可用。
 - **容器**：默认 MKV；MP4 为内部 MKV 分段 → 收尾 stream-copy remux；纯录音 WAV。不是所有播放器/编辑链都适合多轨 MKV。
-- **安全与分发**：尚未做安全审计；NSIS 安装包未签名；不把 Rust/Tauri 当作性能证据。第三方许可与编解码专利适用性尚未完成清权；当前安装包（M17e）仅供内部测试，不应作为正式发行版。
+- **安全与分发**：尚未做安全审计；NSIS 安装包未签名；不把 Rust/Tauri 当作性能证据。FFmpeg 的 chromaprint/FFTW GPL 冲突已移除；Rust 第三方通知、静态组件通知、编解码专利与正式发行条款仍未完成清权；当前安装包（M17e）仅供内部测试，不应作为正式发行版。
 - **验收范围**：L3 的负坐标显示器、真实麦克风、多视频轨播放器兼容矩阵仍未签；本机无麦克风设备导致的 BLOCKED 不算通过（见 `l3-signoff.md` 与 `specs/002-recording-modes.md` 第 184–187 行）。
 
 ## 项目状态
@@ -140,6 +140,7 @@
 - 进程环回与端点：[wasapi.rs](crates/sr-audio/src/wasapi.rs)、[endpoint-match.js](ui/endpoint-match.js)
 - 里程碑报告：[M13](docs/milestones/m13-report.md)、[M14](docs/milestones/m14-report.md)、[M15](docs/milestones/m15-report.md)、[M16](docs/milestones/m16-report.md)、[M17](docs/milestones/m17-report.md)、[M18](docs/milestones/m18-report.md)
 - 人工签核与最新安装包：[L3 签核](docs/milestones/l3-signoff.md)、[M17e 安装包报告](docs/milestones/m17e-package-report.md)
+- FFmpeg LGPL 整改：[FFmpeg LGPL 整改报告](docs/milestones/ffmpeg-lgpl-remediation.md)
 - 崩溃恢复机制与实测：[S5 报告](docs/spikes/s5/s5-crash-recovery.md)
 
 ### 官方与上游资料（2026-10-19 核对）
