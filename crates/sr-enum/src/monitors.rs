@@ -48,6 +48,8 @@ pub struct MonitorEntry {
     pub height_px: u32,
     /// 显示器友好名（DisplayConfig；缺失/失败 → None）。
     pub friendly_name: Option<String>,
+    /// GDI 设备名（`\\.\DISPLAY1`；M18/REQ-22 稳定路径不可得时的录制回退键）。
+    pub gdi_device_name: Option<String>,
     /// `monitorDevicePath`（稳定设备路径；缺失 → None；UI 手选状态键）。
     pub device_path: Option<String>,
     /// PnP ContainerId（规范化小写无花括号；缺失/全零 → None）。
@@ -126,6 +128,7 @@ pub fn list_monitors() -> Result<Vec<MonitorEntry>, Error> {
                 width_px: m.width_px,
                 height_px: m.height_px,
                 friendly_name: meta.friendly_name,
+                gdi_device_name: (!m.device_name.trim().is_empty()).then_some(m.device_name),
                 device_path: meta.device_path,
                 container_id: meta.container_id,
             }

@@ -1,19 +1,18 @@
 // ============================================================================
-// ui/region.js — 区域截图覆盖层交互（REQ-8，运行于 label=region-overlay 窗口）
+// ui/region.js — 区域覆盖层交互（截图 REQ-8；录制 REQ-21，运行于 label=region-overlay）
 //
-// 流程：
-//   1) 启动时取 get_overlay_geometry()（虚拟桌面物理边界 + 窗口缩放）；
-//   2) 左键拖拽绘制选区，尺寸提示实时显示物理像素（client × scale）；
-//   3) 鼠标松开 / Enter 确认：client 矩形换算为物理矩形后调用
-//      take_region_screenshot({rect:{x,y,w,h}})（裁剪参数以 commands.rs RectIn 为准）。
-//      后端按序：隐藏覆盖层 → DwmFlush + ≥150ms 等待合成 → sr-shot 物理像素截图
-//      → 成功则关闭覆盖层。失败时后端恢复覆盖层可见，本页 catch 里 showError 展示
-//      错误（可重新拖拽重试或 Esc 取消），不得先截图后关窗（否则成品会含遮罩/边框像素）；
-//      故本流程不再单独调用 take_screenshot / close_region_overlay；
-//   4) Esc 取消：直接 close_region_overlay() 关闭本窗口，不发截图请求（保持不变）。
+// 模式由后端上下文决定（get_region_context() -> {mode, request_id}）：
+//   - screenshot（默认，旧行为）：拖拽 → 确认 → take_region_screenshot（后端主导
+//     隐藏/等合成/截图/关闭）；Esc → close_region_overlay；
+//   - record（M18）：拖拽 → 实时显示**吸附后最终尺寸**（向下取偶）→ 确认 →
+//     confirm_region_record(request_id, rect)（后端代次复核、隐藏、交付
+//     region_target_added、结束生命周期）；Esc → cancel_region_record(request_id)
+//     使迟到确认失效。record 路径绝不调用截图命令。
 //
-// 浏览器降级（直接双击 region.html 调试）：无 __TAURI__ 时用视口几何做 mock，
-// take_region_screenshot/close 退化为 console 输出 / window.close()。
+// 复用窗口：后端 open_region_overlay 会调用 __regionContextChanged()，本页重新拉取
+// 最新代次上下文（异模式以最新代次为准，旧代次结果由后端丢弃）。
+//
+// 浏览器降级（直接打开 region.html 调试）：无 __TAURI__ 时以 query/视口 mock。
 // ============================================================================
 (() => {
 'use strict';
@@ -25,44 +24,86 @@ const invoke = isTauri ? window.__TAURI__.core.invoke : null;
 const overlay = document.getElementById('overlay');
 const hint = document.getElementById('hint');
 
-const HINT_DEFAULT = '按住左键拖出截图区域 · 松开或 Enter 确认 · Esc 取消';
-const MIN_CLIENT_PX = 10; // 与原 mock 行为一致：小于该尺寸的选区视为误触
+const HINT_SCREENSHOT = '按住左键拖出截图区域 · 松开或 Enter 确认 · Esc 取消';
+const HINT_RECORD = '按住左键拖出录制区域 · 松开或 Enter 确认 · Esc 取消';
+const MIN_CLIENT_PX = 10; // 小于该尺寸的选区视为误触
 
 // -- 后端调用封装（与 ui/api.js real 分支同参数约定） -------------------------
 const backend = {
   getGeometry: () => invoke('get_overlay_geometry'),
-  // P1-A：后端主导截图（隐藏覆盖层 → 等合成 → 截图 → 关闭覆盖层）。
+  getContext: () => invoke('get_region_context'),
   takeRegionScreenshot: (rect) => invoke('take_region_screenshot', { rect }),
+  confirmRegionRecord: (requestId, rect) => invoke('confirm_region_record', { requestId, rect }),
+  cancelRegionRecord: (requestId) => invoke('cancel_region_record', { requestId }),
   close: () => invoke('close_region_overlay'),
 };
 if (!isTauri) {
+  const q = new URLSearchParams(location.search);
   backend.getGeometry = () => Promise.resolve({
     origin_x: 0, origin_y: 0,
     width: window.innerWidth, height: window.innerHeight,
     scale: window.devicePixelRatio || 1,
   });
+  backend.getContext = () => Promise.resolve({
+    mode: q.get('mode') || 'screenshot',
+    request_id: q.get('request_id') || '',
+  });
   backend.takeRegionScreenshot = (rect) => {
+    window.SRRegionMock = { action: 'screenshot', rect };
     console.log('[region mock] take_region_screenshot rect =', rect);
-    window.close(); // 模拟真实后端「截图后关闭覆盖层」
+    window.close();
     return Promise.resolve({
       path: `mock-region-${rect.w}x${rect.h}.png`,
       width_px: rect.w,
       height_px: rect.h,
     });
   };
+  backend.confirmRegionRecord = (requestId, rect) => {
+    window.SRRegionMock = { action: 'record', requestId, rect };
+    console.log('[region mock] confirm_region_record', requestId, rect);
+    window.close();
+    return Promise.resolve({ request_id: requestId, rect });
+  };
+  backend.cancelRegionRecord = (requestId) => {
+    window.SRRegionMock = { action: 'cancel', requestId };
+    window.close();
+    return Promise.resolve();
+  };
   backend.close = () => { window.close(); return Promise.resolve(); };
 }
 
 // -- 状态 ---------------------------------------------------------------------
 let geom = null;        // get_overlay_geometry() 结果
+let ctx = { mode: 'screenshot', request_id: '' };
 let start = null;       // 拖拽起点 {x, y}（client CSS px）
 let sel = null;         // 选区 DOM
 let current = null;     // 最近一次绘制的 client 矩形（供 Enter 确认）
-let busy = false;       // 截图请求进行中，屏蔽重复确认
+let busy = false;       // 请求进行中，屏蔽重复确认
 
-backend.getGeometry()
-  .then((g) => { geom = g; })
-  .catch((e) => showError(`获取覆盖层几何失败：${e}`));
+async function loadContext() {
+  try {
+    ctx = await backend.getContext();
+  } catch (e) {
+    ctx = { mode: 'screenshot', request_id: '' };
+    console.warn('[region] get_region_context 失败（回退截图模式）:', e);
+  }
+  hint.classList.remove('err');
+  hint.textContent = ctx.mode === 'record' ? HINT_RECORD : HINT_SCREENSHOT;
+}
+
+function init() {
+  backend.getGeometry()
+    .then((g) => { geom = g; })
+    .catch((e) => showError(`获取覆盖层几何失败：${e}`));
+  loadContext();
+}
+
+// 复用窗口：后端以 eval 触发；重新拉取最新代次并清空旧选区。
+window.__regionContextChanged = () => {
+  busy = false;
+  resetSelection();
+  loadContext();
+};
 
 function showError(msg) {
   hint.textContent = `${msg} · Esc 关闭`;
@@ -76,7 +117,15 @@ function resetSelection() {
 }
 
 function cancel() {
-  backend.close().catch((e) => console.error('[region] close_region_overlay 失败:', e));
+  const call = ctx.mode === 'record' && ctx.request_id
+    ? backend.cancelRegionRecord(ctx.request_id)
+    : backend.close();
+  call.catch((e) => console.error('[region] 取消区域覆盖层失败:', e));
+}
+
+function finalRect(phys) {
+  // 录制：输出 = 向下取偶后的最终尺寸（与后端确认/启动口径一致）。
+  return ctx.mode === 'record' ? G.snapPhysicalRect(phys) : phys;
 }
 
 async function confirm(rect) {
@@ -89,7 +138,19 @@ async function confirm(rect) {
   }
   busy = true;
   const phys = G.clientRectToPhysical(geom, rect);
+  const final = finalRect(phys);
   hint.classList.remove('err');
+  if (ctx.mode === 'record') {
+    hint.textContent = `正在确认录制区域 ${final.w} × ${final.h}…`;
+    try {
+      await backend.confirmRegionRecord(ctx.request_id, phys);
+      // 后端隐藏覆盖层 → 交付 → 关闭；成功路径无需再发 close。
+    } catch (e) {
+      busy = false;
+      showError(`区域录制确认失败：${e}`);
+    }
+    return;
+  }
   hint.textContent = `正在截图 ${phys.w} × ${phys.h}…`;
   try {
     // 后端在完成截图后关闭覆盖层（本窗口）；成功时无需再发 close。
@@ -118,10 +179,16 @@ overlay.addEventListener('mousemove', (e) => {
     left: `${rect.x}px`, top: `${rect.y}px`,
     width: `${rect.w}px`, height: `${rect.h}px`,
   });
-  // 尺寸提示显示物理像素（与用户最终得到的 PNG 尺寸一致）
+  // 尺寸提示：录制显示吸附后最终物理尺寸（禁止确认后静默少像素）。
   const scale = geom ? geom.scale : 1;
-  const pw = Math.round(rect.w * scale), ph = Math.round(rect.h * scale);
-  sel.innerHTML = `<span class="region-size">${pw} × ${ph}</span>`;
+  const phys = {
+    x: Math.round((geom ? geom.origin_x : 0) + rect.x * scale),
+    y: Math.round((geom ? geom.origin_y : 0) + rect.y * scale),
+    w: Math.max(1, Math.round(rect.w * scale)),
+    h: Math.max(1, Math.round(rect.h * scale)),
+  };
+  const shown = ctx.mode === 'record' ? G.snapPhysicalRect(phys) : phys;
+  sel.innerHTML = `<span class="region-size">${shown.w} × ${shown.h}</span>`;
 });
 
 overlay.addEventListener('mouseup', (e) => {
@@ -135,4 +202,6 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { e.preventDefault(); cancel(); return; }
   if (e.key === 'Enter' && current && !busy) { e.preventDefault(); confirm(current); }
 });
+
+init();
 })();

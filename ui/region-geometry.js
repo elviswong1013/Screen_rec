@@ -60,5 +60,34 @@
     };
   }
 
-  return { clientToPhysical, normalizeClientRect, clientRectToPhysical };
+  /**
+   * 向下取偶（NV12/编码约束；M18/REQ-21 输出尺寸口径）。
+   * @param {number} n
+   * @returns {number}
+   */
+  function evenFloor(n) {
+    return Math.max(0, Math.floor(n) & ~1);
+  }
+
+  /**
+   * 物理矩形 → 吸附后最终矩形（x/y 不变，w/h 向下取偶）。
+   * @param {{x:number, y:number, w:number, h:number}} rect
+   * @returns {{x:number, y:number, w:number, h:number}}
+   */
+  function snapPhysicalRect(rect) {
+    return { x: rect.x, y: rect.y, w: evenFloor(rect.w), h: evenFloor(rect.h) };
+  }
+
+  /**
+   * 矩形是否完全位于单台显示器内（物理像素；M18 v1 单屏限制）。
+   * @param {{x:number, y:number, w:number, h:number}} rect
+   * @param {{x:number, y:number, width:number, height:number}} monitor
+   */
+  function rectInsideMonitor(rect, monitor) {
+    return rect.x >= monitor.x && rect.y >= monitor.y
+      && rect.x + rect.w <= monitor.x + monitor.width
+      && rect.y + rect.h <= monitor.y + monitor.height;
+  }
+
+  return { clientToPhysical, normalizeClientRect, clientRectToPhysical, evenFloor, snapPhysicalRect, rectInsideMonitor };
 });

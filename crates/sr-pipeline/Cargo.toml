@@ -16,6 +16,9 @@ sr-capture = { path = "../sr-capture" }
 # 音频隔离面（REQ-14/17：App 身份校验、进程环回流式采集）。
 sr-audio = { path = "../sr-audio" }
 
+# M18/REQ-22/24：区域目标显示器解析与几何失效轮询（稳定 device_path/GDI 键）
+sr-enum = { path = "../sr-enum" }
+
 # 本地时区偏移（REQ-24 命名时间戳）+ 窗口标题（Window 目标名，REQ-24 sanitize 来源）
 # + sidecar Job 对象绑定（D8/REQ-22：主进程消失 → sidecar 连带终止）+ QPC 时基
 # （SessionManifest.start_qpc，REQ-25/§3.4）。

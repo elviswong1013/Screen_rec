@@ -354,7 +354,11 @@ function Get-ImageStats {
 }
 
 function Send-MouseMove {
-  param([Parameter(Mandatory)] [int] $X, [Parameter(Mandatory)] [int] $Y)
+  param(
+    [Parameter(Mandatory)] [int] $X,
+    [Parameter(Mandatory)] [int] $Y,
+    [int] $TolerancePx = 2
+  )
   Initialize-E2E
   $vs = Get-VirtualScreen
   $nx = [int][math]::Round(($X - $vs.X) * 65535.0 / [math]::Max(1, $vs.Width - 1))
@@ -373,11 +377,11 @@ function Send-MouseMove {
   }
 
   $pos = Get-CursorPosition
-  if ([math]::Abs($pos.X - $X) -gt 2 -or [math]::Abs($pos.Y - $Y) -gt 2) {
+  if ([math]::Abs($pos.X - $X) -gt $TolerancePx -or [math]::Abs($pos.Y - $Y) -gt $TolerancePx) {
     [void][SrE2E.Native]::SetCursorPos($X, $Y)
     Start-Sleep -Milliseconds 30
     $pos = Get-CursorPosition
-    if ([math]::Abs($pos.X - $X) -gt 2 -or [math]::Abs($pos.Y - $Y) -gt 2) {
+    if ([math]::Abs($pos.X - $X) -gt $TolerancePx -or [math]::Abs($pos.Y - $Y) -gt $TolerancePx) {
       throw "光标定位失败（目标 $X,$Y，实际 $($pos.X),$($pos.Y)）"
     }
   }
@@ -402,9 +406,10 @@ function Send-Click {
   param(
     [Parameter(Mandatory)] [int] $X,
     [Parameter(Mandatory)] [int] $Y,
-    [int] $SettleMs = 120
+    [int] $SettleMs = 120,
+    [int] $TolerancePx = 2
   )
-  Send-MouseMove -X $X -Y $Y
+  Send-MouseMove -X $X -Y $Y -TolerancePx $TolerancePx
   Start-Sleep -Milliseconds $SettleMs
   Send-MouseButton -Action down
   Start-Sleep -Milliseconds 60
@@ -418,16 +423,17 @@ function Send-Drag {
     [Parameter(Mandatory)] [int] $X2,
     [Parameter(Mandatory)] [int] $Y2,
     [int] $Steps = 12,
-    [int] $StepDelayMs = 30
+    [int] $StepDelayMs = 30,
+    [int] $TolerancePx = 2
   )
-  Send-MouseMove -X $X1 -Y $Y1
+  Send-MouseMove -X $X1 -Y $Y1 -TolerancePx $TolerancePx
   Start-Sleep -Milliseconds 180
   Send-MouseButton -Action down
   Start-Sleep -Milliseconds 120
   for ($i = 1; $i -le $Steps; $i++) {
     $x = [int][math]::Round($X1 + ($X2 - $X1) * $i / $Steps)
     $y = [int][math]::Round($Y1 + ($Y2 - $Y1) * $i / $Steps)
-    Send-MouseMove -X $x -Y $y
+    Send-MouseMove -X $x -Y $y -TolerancePx $TolerancePx
     Start-Sleep -Milliseconds $StepDelayMs
   }
   Start-Sleep -Milliseconds 120
@@ -499,13 +505,16 @@ function Find-AccentButton {
   #>
   param(
     [Parameter(Mandatory)] [string] $ScreenshotPath,
-    [int] $MinRunPx = 120
+    [int] $MinRunPx = 120,
+    [int] $MinY = 0,
+    [int] $MaxY = 0
   )
   Add-Type -AssemblyName System.Drawing
   $bmp = [System.Drawing.Bitmap]::FromFile($ScreenshotPath)
   try {
     $rows = New-Object System.Collections.ArrayList
-    for ($y = 0; $y -lt $bmp.Height; $y += 2) {
+    $yEnd = if ($MaxY -le 0) { $bmp.Height } else { [math]::Min($MaxY, $bmp.Height) }
+    for ($y = [math]::Max(0, $MinY); $y -lt $yEnd; $y += 2) {
       $runStart = -1; $runEnd = -1; $bestStart = -1; $bestEnd = -1
       for ($x = 0; $x -lt $bmp.Width; $x += 2) {
         $c = $bmp.GetPixel($x, $y)
@@ -629,6 +638,255 @@ function Open-RegionOverlayFromUi {
     }
   }
   throw "区域面板按钮点击后未出现 region-overlay 窗口（最后截图：$lastShot）"
+}
+
+function Get-UiWindow {
+  param([Parameter(Mandatory)] [int] $ProcessId)
+  Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+  $root = [System.Windows.Automation.AutomationElement]::RootElement
+  $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $ProcessId)
+  $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+  for ($i = 0; $i -lt $wins.Count; $i++) {
+    if ($wins[$i].Current.ControlType.ProgrammaticName -eq 'ControlType.Window') { return $wins[$i] }
+  }
+  return $null
+}
+
+function Wait-UiElementByAutomationId {
+  param([Parameter(Mandatory)] [int] $ProcessId, [Parameter(Mandatory)] [string] $AutomationId, [int] $TimeoutMs = 5000)
+  $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+  do {
+    $win = Get-UiWindow -ProcessId $ProcessId
+    if ($win) {
+      $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, $AutomationId)
+      $el = $win.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+      if ($el) { return $el }
+    }
+    Start-Sleep -Milliseconds 150
+  } while ([DateTime]::UtcNow -lt $deadline)
+  return $null
+}
+
+function Invoke-UiToggle {
+  param([Parameter(Mandatory)] [int] $ProcessId, [Parameter(Mandatory)] [string] $AutomationId)
+  $el = Wait-UiElementByAutomationId -ProcessId $ProcessId -AutomationId $AutomationId
+  if (-not $el) { return $false }
+  try {
+    $pattern = $el.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+    $pattern.Toggle()
+    return $true
+  } catch {
+    try {
+      $invoke = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+      $invoke.Invoke()
+      return $true
+    } catch { return $false }
+  }
+}
+
+function Select-UiRadioByPrefix {
+  param([Parameter(Mandatory)] [int] $ProcessId, [Parameter(Mandatory)] [string] $NamePrefix)
+  $win = Get-UiWindow -ProcessId $ProcessId
+  if (-not $win) { return $false }
+  $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::RadioButton)
+  $radios = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+  for ($i = 0; $i -lt $radios.Count; $i++) {
+    if ($radios[$i].Current.Name.StartsWith($NamePrefix)) {
+      try {
+        $sel = $radios[$i].GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+        $sel.Select()
+        return $true
+      } catch { return $false }
+    }
+  }
+  return $false
+}
+
+function Find-UiButtonByName {
+  param([Parameter(Mandatory)] [int] $ProcessId, [Parameter(Mandatory)] [string] $Name, [switch] $Prefix)
+  $win = Get-UiWindow -ProcessId $ProcessId
+  if (-not $win) { return $null }
+  $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+  $buttons = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+  for ($i = 0; $i -lt $buttons.Count; $i++) {
+    $n = $buttons[$i].Current.Name
+    if (($Prefix -and $n.StartsWith($Name)) -or (-not $Prefix -and $n -eq $Name)) { return $buttons[$i] }
+  }
+  return $null
+}
+
+function Wait-UiButtonByName {
+  param([Parameter(Mandatory)] [int] $ProcessId, [Parameter(Mandatory)] [string] $Name, [int] $TimeoutMs = 5000, [switch] $Prefix)
+  $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+  do {
+    $el = Find-UiButtonByName -ProcessId $ProcessId -Name $Name -Prefix:$Prefix
+    if ($el) { return $el }
+    Start-Sleep -Milliseconds 150
+  } while ([DateTime]::UtcNow -lt $deadline)
+  return $null
+}
+
+function Invoke-UiButtonByName {
+  param([Parameter(Mandatory)] [int] $ProcessId, [Parameter(Mandatory)] [string] $Name, [switch] $Prefix)
+  $el = Find-UiButtonByName -ProcessId $ProcessId -Name $Name -Prefix:$Prefix
+  if (-not $el) { return $false }
+  try {
+    $invoke = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    $invoke.Invoke()
+    return $true
+  } catch { return $false }
+}
+
+function Set-UiScrollTop {
+  <# 通过 UIA ScrollPattern 把 WebView 主文档滚回顶部（点击/UIA 勾选可能改变滚动位置）。 #>
+  param([Parameter(Mandatory)] [int] $ProcessId)
+  $win = Get-UiWindow -ProcessId $ProcessId
+  if (-not $win) { return $false }
+  $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Document)
+  $docs = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+  for ($i = 0; $i -lt $docs.Count; $i++) {
+    try {
+      $scroll = $docs[$i].GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)
+      $scroll.SetScrollPercent([System.Windows.Automation.ScrollPattern]::NoScroll, 0)
+      return $true
+    } catch { }
+  }
+  return $false
+}
+
+function Get-UiRegionSize {
+  <# 从主窗文本读取覆盖层确认后的区域最终尺寸（仅取开始栏「已选…区域 W×H」）。 #>
+  param([Parameter(Mandatory)] [int] $ProcessId)
+  $win = Get-UiWindow -ProcessId $ProcessId
+  if (-not $win) { return $null }
+  $all = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+  $fallback = $null
+  for ($i = 0; $i -lt $all.Count; $i++) {
+    $n = $all[$i].Current.Name
+    if ($n -and ($n -match '区域\s*(\d+)\s*[×xX]\s*(\d+)')) {
+      $item = [pscustomobject]@{ Width = [int]$matches[1]; Height = [int]$matches[2] }
+      if ($n -match '已选') { return $item }
+      if (-not $fallback) { $fallback = $item }
+    }
+  }
+  return $fallback
+}
+
+function Send-CtrlEnter {
+  <# 发送 Ctrl+Enter（应用内开始录制热键；真实输入通道）。 #>
+  Initialize-E2E
+  $size = [System.Runtime.InteropServices.Marshal]::SizeOf([type][SrE2E.INPUT])
+  $ctrlDown = New-Object 'SrE2E.INPUT[]' 1
+  $ctrlDown[0].type = [SrE2E.Native]::INPUT_KEYBOARD
+  $ctrlDown[0].ki.wVk = 0x11
+  $enterDown = New-Object 'SrE2E.INPUT[]' 1
+  $enterDown[0].type = [SrE2E.Native]::INPUT_KEYBOARD
+  $enterDown[0].ki.wVk = 0x0D
+  $enterUp = New-Object 'SrE2E.INPUT[]' 1
+  $enterUp[0].type = [SrE2E.Native]::INPUT_KEYBOARD
+  $enterUp[0].ki.wVk = 0x0D
+  $enterUp[0].ki.dwFlags = [SrE2E.Native]::KEYEVENTF_KEYUP
+  $ctrlUp = New-Object 'SrE2E.INPUT[]' 1
+  $ctrlUp[0].type = [SrE2E.Native]::INPUT_KEYBOARD
+  $ctrlUp[0].ki.wVk = 0x11
+  $ctrlUp[0].ki.dwFlags = [SrE2E.Native]::KEYEVENTF_KEYUP
+  foreach ($k in @($ctrlDown, $enterDown, $enterUp, $ctrlUp)) {
+    if ([SrE2E.Native]::SendInput(1, $k, $size) -ne 1) { throw 'SendInput(Ctrl+Enter) 失败' }
+    Start-Sleep -Milliseconds 60
+  }
+}
+
+function Find-RedButton {
+  <#
+    .SYNOPSIS 定位录制红按钮（--rec #f04747）；取最上方（全部停止）或指定纵向带。
+  #>
+  param(
+    [Parameter(Mandatory)] [string] $ScreenshotPath,
+    [int] $MinRunPx = 70,
+    [int] $MinY = 0,
+    [int] $MaxY = 0
+  )
+  Add-Type -AssemblyName System.Drawing
+  $bmp = [System.Drawing.Bitmap]::FromFile($ScreenshotPath)
+  try {
+    $yEnd = if ($MaxY -le 0) { $bmp.Height } else { [math]::Min($MaxY, $bmp.Height) }
+    $hits = New-Object System.Collections.ArrayList
+    for ($y = [math]::Max(0, $MinY); $y -lt $yEnd; $y += 2) {
+      $runStart = -1; $runEnd = -1; $bestStart = -1; $bestEnd = -1
+      for ($x = 0; $x -lt $bmp.Width; $x += 2) {
+        $c = $bmp.GetPixel($x, $y)
+        $hit = $c.R -ge 200 -and $c.G -le 110 -and $c.B -le 110
+        if ($hit) { if ($runStart -lt 0) { $runStart = $x }; $runEnd = $x }
+        else {
+          if ($runStart -ge 0 -and ($runEnd - $runStart) -gt ($bestEnd - $bestStart)) { $bestStart = $runStart; $bestEnd = $runEnd }
+          $runStart = -1
+        }
+      }
+      if ($runStart -ge 0 -and ($runEnd - $runStart) -gt ($bestEnd - $bestStart)) { $bestStart = $runStart; $bestEnd = $runEnd }
+      if ($bestStart -ge 0 -and ($bestEnd - $bestStart) -ge $MinRunPx) {
+        [void]$hits.Add([pscustomobject]@{ Y = $y; Left = $bestStart; Right = $bestEnd })
+      }
+    }
+    if ($hits.Count -eq 0) { return $null }
+    $sorted = @($hits | Sort-Object Y)
+    $bands = New-Object System.Collections.ArrayList
+    $current = New-Object System.Collections.ArrayList
+    $lastY = $null
+    foreach ($h in $sorted) {
+      if ($null -ne $lastY -and ($h.Y - $lastY) -gt 8) {
+        [void]$bands.Add(@($current.ToArray())); $current.Clear()
+      }
+      [void]$current.Add($h); $lastY = $h.Y
+    }
+    if ($current.Count -gt 0) { [void]$bands.Add(@($current.ToArray())) }
+    $band = $bands[0]
+    $top = ($band | Measure-Object -Property Y -Minimum).Minimum
+    $bottom = ($band | Measure-Object -Property Y -Maximum).Maximum
+    $widest = $band | Sort-Object { $_.Right - $_.Left } -Descending | Select-Object -First 1
+    return [pscustomobject]@{
+      X = [int](($widest.Left + $widest.Right) / 2)
+      Y = [int](($top + $bottom) / 2)
+    }
+  } finally { $bmp.Dispose() }
+}
+
+function Open-RegionRecordFromUi {
+  <#
+    .SYNOPSIS 以真实鼠标操作打开区域录制覆盖层（录制页顶部「框选区域录制」）。
+  #>
+  param(
+    [Parameter(Mandatory)] [int] $ProcessId,
+    [Parameter(Mandatory)] [string] $WorkDir,
+    [int] $OverlayTimeoutMs = 8000,
+    [int] $MaxAttempts = 3,
+    [int] $TolerancePx = 2
+  )
+  $win = Find-AppWindow -ProcessId $ProcessId
+  if (-not $win) { throw "主窗口未出现（pid=$ProcessId）" }
+  $shotDir = Join-Path $env:TEMP 'screen-rec-e2e'
+  New-Item -ItemType Directory -Force -Path $shotDir | Out-Null
+  for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+    [void](Set-ForegroundWindow -Handle $win.Handle)
+    $client = Get-ClientArea -Handle $win.Handle
+    # 首次录制后页面可能滚动到路由/恢复区；先回到顶部再找 header 按钮。
+    Send-MouseMove -X ($client.X + [int](214 * ($client.Width / 1024.0))) -Y ($client.Y + [int](300 * ($client.Width / 1024.0))) -TolerancePx $TolerancePx
+    Send-Wheel -Delta 120 -Repeat 30
+    Start-Sleep -Milliseconds 300
+    [void](Set-UiScrollTop -ProcessId $ProcessId)
+    Start-Sleep -Milliseconds 300
+    $shot = Join-Path $shotDir 'main-window-region-record.png'
+    Save-ScreenBitmap -Path $shot -X $client.X -Y $client.Y -Width $client.Width -Height $client.Height | Out-Null
+    # 顶部区域（记录页 header）：只有「框选区域录制」是长强调蓝按钮。
+    $btn = Find-AccentButton -ScreenshotPath $shot -MinRunPx 90 -MinY 0 -MaxY ([int](640 * ($client.Width / 1024.0)))
+    if (-not $btn) { continue }
+    Write-Host "区域录制按钮（尝试 $attempt）: $($btn.X),$($btn.Y) client=$($client.X),$($client.Y)"
+    Send-Click -X ($client.X + $btn.X) -Y ($client.Y + $btn.Y) -TolerancePx $TolerancePx
+    $overlay = Wait-TopLevelWindow -Title 'region-overlay' -ProcessId $ProcessId -TimeoutMs $OverlayTimeoutMs
+    if ($overlay) {
+      return [pscustomobject]@{ AppWindow = $win; Client = $client; Button = $btn; Overlay = $overlay; Screenshot = $shot; Attempts = $attempt }
+    }
+  }
+  throw '点击「框选区域录制」后未出现 region-overlay 窗口'
 }
 
 Export-ModuleMember -Function *

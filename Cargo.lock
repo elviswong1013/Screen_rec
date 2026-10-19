@@ -3407,6 +3407,7 @@ version = "0.1.0"
 dependencies = [
  "rustfft",
  "sr-audio",
+ "sr-capture",
  "sr-core",
  "sr-enum",
  "sr-merge",
@@ -3430,6 +3431,7 @@ dependencies = [
  "sr-audio",
  "sr-capture",
  "sr-core",
+ "sr-enum",
  "windows",
 ]
 

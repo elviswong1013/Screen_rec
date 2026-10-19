@@ -76,8 +76,16 @@ pub enum TargetIn {
     Window { hwnd: u64 },
     /// 显示器（与 sr-enum 枚举同一索引空间，0..n-1）。
     Monitor { index: u32 },
-    /// 矩形区域（物理桌面坐标）。
-    Region { rect: RectIn },
+    /// 矩形区域（物理桌面坐标；M18 录制目标）。
+    ///
+    /// `display_device` 为稳定设备路径（P2 `device_path`；不可得回退 GDI `szDevice`）。
+    /// 共享字段以 serde 默认值保持**旧截图 JSON**（仅 `rect`）反序列化兼容；
+    /// 录制入口强制校验非空，截图入口忽略该字段。
+    Region {
+        #[serde(default)]
+        display_device: String,
+        rect: RectIn,
+    },
 }
 
 /// 固定输出画布（D6：启动时固定宽高/fps/像素格式）。
@@ -188,6 +196,8 @@ pub struct MonitorOut {
     pub primary: bool,
     /// 显示器友好名（缺失 → 回退 `Monitor {index}`）。
     pub friendly_name: String,
+    /// GDI 设备名（`\\.\DISPLAY1`；M18/REQ-22 device_path 缺失时的回退键）。
+    pub gdi_device_name: Option<String>,
     /// DisplayConfig monitorDevicePath（稳定键；缺失 → null）。
     pub device_path: Option<String>,
     /// PnP ContainerId（缺失/全零 → null）。
@@ -742,6 +752,7 @@ pub async fn list_targets() -> Result<TargetsOut, String> {
                         y: m.y,
                         primary: m.is_primary,
                         friendly_name: name,
+                        gdi_device_name: m.gdi_device_name,
                         device_path: m.device_path,
                         container_id: m.container_id,
                     }
@@ -1319,8 +1330,12 @@ fn to_multi_route(cfg: RouteConfigIn) -> Result<MultiRouteConfig, String> {
             "isolated 模式不得包含 system 音源（REQ-17：隔离=目标应用轨[+麦克风]；需要系统轨请用 all_tracks）",
         ));
     }
-    // M16/REQ-13：端点音源仅适用于显示器目标；窗口/区域 + 端点 → 拒绝。
-    if !matches!(cfg.target, TargetIn::Monitor { .. })
+    // M16/REQ-13 + M18/REQ-23：端点音源适用于显示器目标；区域目标仅全音轨可选
+    // （隔离模式 = 仅所选应用，不隐式加入设备混音）；窗口/纯录音拒绝不变。
+    let is_region = matches!(cfg.target, TargetIn::Region { .. });
+    let is_monitor = matches!(cfg.target, TargetIn::Monitor { .. });
+    let endpoint_allowed = is_monitor || (is_region && cfg.audio.mode == AudioMode::AllTracks);
+    if !endpoint_allowed
         && cfg
             .audio
             .sources
@@ -1329,14 +1344,38 @@ fn to_multi_route(cfg: RouteConfigIn) -> Result<MultiRouteConfig, String> {
     {
         return Err(invalid(
             "E_INVALID_AUDIO_PLAN",
-            "render_endpoint 音源仅适用于显示器目标（REQ-13：窗口目标隔离限制不变）",
+            if is_region {
+                "区域隔离模式不得包含 render_endpoint 音源（REQ-23：端点仅全音轨可选；隔离=仅所选应用）"
+            } else {
+                "render_endpoint 音源仅适用于显示器目标（REQ-13：窗口目标隔离限制不变）"
+            },
         ));
     }
-    // M16/REQ-14：显示器目标零音源 → 启动被拒 + 端点选项引导。
-    if matches!(cfg.target, TargetIn::Monitor { .. }) && cfg.audio.sources.is_empty() {
+    // M18/REQ-23：区域隔离模式 = 仅所选应用（不隐式系统/麦克风/端点）。
+    if is_region && cfg.audio.mode == AudioMode::Isolated {
+        if let Some(kind) = cfg.audio.sources.iter().find_map(|s| match s {
+            AudioSourceIn::System => Some("system"),
+            AudioSourceIn::Mic { .. } => Some("mic"),
+            AudioSourceIn::RenderEndpoint { .. } => Some("render_endpoint"),
+            AudioSourceIn::App { .. } => None,
+        }) {
+            return Err(invalid(
+                "E_INVALID_AUDIO_PLAN",
+                format!(
+                    "区域隔离模式只接受 app 音源（得到 {kind}；REQ-23：隔离=仅所选应用各自独立成轨）"
+                ),
+            ));
+        }
+    }
+    // M16/REQ-14 + M18/REQ-23：显示器/区域目标零音源 → 启动被拒 + 明确引导。
+    if (is_monitor || is_region) && cfg.audio.sources.is_empty() {
         return Err(invalid(
             "E_INVALID_AUDIO_PLAN",
-            "显示器目标没有任何音源：请勾选该屏输出端点、系统音频或麦克风（不静默录制；REQ-14）",
+            if is_region {
+                "区域目标没有任何音源：请选择至少一个应用（隔离）或系统/麦克风/端点（全音轨）（不静默录制；REQ-23）"
+            } else {
+                "显示器目标没有任何音源：请勾选该屏输出端点、系统音频或麦克风（不静默录制；REQ-14）"
+            },
         ));
     }
     Ok(MultiRouteConfig {
@@ -1401,15 +1440,32 @@ fn route_target(target: &TargetIn) -> Result<route::RouteTarget, String> {
             }
         }
         TargetIn::Monitor { index } => Ok(route::RouteTarget::Monitor { index: *index }),
-        TargetIn::Region { rect } => {
+        TargetIn::Region {
+            display_device,
+            rect,
+        } => {
             if rect.w == 0 || rect.h == 0 {
                 return Err(invalid(
                     "E_INVALID_REGION",
                     format!("区域尺寸不得为 0（{}x{}）", rect.w, rect.h),
                 ));
             }
-            // sr-pipeline 的 Region 录制尚未实现：形状接受，显式错误由其返回（E_TARGET_LOST）。
-            Ok(route::RouteTarget::Region)
+            let device = display_device.trim();
+            if device.is_empty() {
+                return Err(invalid(
+                    "E_TARGET_LOST",
+                    "区域录制缺少 display_device（设备路径与 GDI szDevice 均不可得；拒绝用友好名代替）",
+                ));
+            }
+            Ok(route::RouteTarget::Region {
+                display_device: device.to_string(),
+                rect: route::RegionRect {
+                    x: rect.x,
+                    y: rect.y,
+                    w: rect.w,
+                    h: rect.h,
+                },
+            })
         }
     }
 }
@@ -1424,7 +1480,7 @@ fn shot_target(target: &TargetIn) -> Result<ShotTarget, String> {
             }
         }
         TargetIn::Monitor { index } => Ok(ShotTarget::Monitor { index: *index }),
-        TargetIn::Region { rect } => {
+        TargetIn::Region { rect, .. } => {
             if rect.w == 0 || rect.h == 0 {
                 return Err(invalid(
                     "E_INVALID_REGION",
@@ -1447,6 +1503,7 @@ fn shot_target(target: &TargetIn) -> Result<ShotTarget, String> {
 fn route_error_code(error: &RouteError) -> &'static str {
     match error {
         RouteError::EncoderUnavailable => "E_ENCODER_UNAVAILABLE",
+        RouteError::RegionSizeUnsupported { .. } => "E_ENCODER_UNAVAILABLE",
         RouteError::ConsentDenied => "E_CONSENT_DENIED",
         RouteError::SidecarExit { .. } => "E_SIDECAR_EXIT",
         RouteError::WaitTimeout => "E_WAIT_TIMEOUT",
@@ -2221,5 +2278,173 @@ mod tests {
             STATE_FINALIZED,
             "REQ-12：旧快照不得回退缓存；新订阅必须取得终态"
         );
+    }
+
+    // ── M18/REQ-22：区域 IPC DTO / 坐标 / 拒绝矩阵 ──
+
+    #[test]
+    fn unit_region_ipc_dto_old_screenshot_json_compatible() {
+        // 旧截图 JSON（只有 rect）必须继续可反序列化并走截图映射。
+        let old: TargetIn =
+            serde_json::from_str(r#"{"kind":"region","rect":{"x":-100,"y":20,"w":300,"h":200}}"#)
+                .expect("旧截图 JSON 应兼容");
+        assert_eq!(
+            old,
+            TargetIn::Region {
+                display_device: String::new(),
+                rect: RectIn {
+                    x: -100,
+                    y: 20,
+                    w: 300,
+                    h: 200
+                }
+            }
+        );
+        assert!(
+            shot_target(&old).is_ok(),
+            "旧截图 JSON 的截图入口不得要求 display_device"
+        );
+        let err = route_target(&old).expect_err("录制入口必须强制校验 display_device");
+        assert!(err.contains("E_TARGET_LOST"), "得到 {err}");
+
+        // 新录制 JSON：display_device 进入管线目标，rect 不再丢弃。
+        let new: TargetIn = serde_json::from_str(
+            r#"{"kind":"region","display_device":"\\\\?\\DISPLAY#A#1","rect":{"x":10,"y":20,"w":450,"h":300}}"#,
+        )
+        .expect("区域录制 JSON 应解析");
+        let mapped = route_target(&new).expect("有效 display_device 应映射");
+        assert_eq!(
+            mapped,
+            route::RouteTarget::Region {
+                display_device: r"\\?\DISPLAY#A#1".to_string(),
+                rect: route::RegionRect {
+                    x: 10,
+                    y: 20,
+                    w: 450,
+                    h: 300
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn unit_region_desktop_to_frame_crop_formula_and_bounds() {
+        // 桌面 rect − 显示器原点（左上）；非零偏移/负原点。
+        let crop = route::region_crop_rect(
+            route::RegionRect {
+                x: -1200,
+                y: 300,
+                w: 401,
+                h: 301,
+            },
+            -1280,
+            100,
+            1280,
+            1024,
+        )
+        .expect("单屏内矩形应映射");
+        assert_eq!(
+            (crop.start_x, crop.start_y, crop.end_x, crop.end_y),
+            (80, 200, 480, 500)
+        );
+        let err = route::region_crop_rect(
+            route::RegionRect {
+                x: -1200,
+                y: 300,
+                w: 200,
+                h: 900,
+            },
+            -1280,
+            100,
+            1280,
+            1024,
+        )
+        .expect_err("终点越界必须拒绝");
+        assert!(err.contains("越界"), "得到 {err}");
+        let err = route::region_crop_rect(
+            route::RegionRect {
+                x: 10,
+                y: 10,
+                w: 63,
+                h: 100,
+            },
+            0,
+            0,
+            1920,
+            1080,
+        )
+        .expect_err("<64×64 必须拒绝");
+        assert!(err.contains("过小"), "得到 {err}");
+    }
+
+    #[test]
+    fn unit_commands_source_rejection_region_matrix() {
+        let app = AudioSourceIn::App {
+            pid: 1234,
+            created_at_unix_ms: 1_700_000_000_000,
+        };
+        let endpoint = AudioSourceIn::RenderEndpoint {
+            device_id: "ep-display".to_string(),
+        };
+        let region = || TargetIn::Region {
+            display_device: r"\\.\DISPLAY1".to_string(),
+            rect: RectIn {
+                x: 0,
+                y: 0,
+                w: 400,
+                h: 300,
+            },
+        };
+
+        // 隔离：仅 app 接受。
+        let planned = plan_routes(vec![base_route(
+            region(),
+            AudioMode::Isolated,
+            vec![app.clone()],
+        )])
+        .expect("区域隔离 + app 应接受");
+        assert_eq!(planned[0].audio.len(), 1);
+
+        // 隔离：system/mic/endpoint 一律拒绝（防设备混音泄漏）。
+        for (src, needle) in [
+            (AudioSourceIn::System, "system"),
+            (
+                AudioSourceIn::Mic {
+                    device_id: "mic-1".to_string(),
+                },
+                "mic",
+            ),
+            (endpoint.clone(), "render_endpoint"),
+        ] {
+            let err = plan_routes(vec![base_route(region(), AudioMode::Isolated, vec![src])])
+                .expect_err("区域隔离只接受 app");
+            assert!(err.contains("E_INVALID_AUDIO_PLAN"), "得到 {err}");
+            assert!(err.contains(needle), "提示应指出 {needle}（得到 {err}）");
+        }
+
+        // 全音轨：endpoint 可选（与系统/应用并列）。
+        let planned = plan_routes(vec![base_route(
+            region(),
+            AudioMode::AllTracks,
+            vec![endpoint.clone(), AudioSourceIn::System, app],
+        )])
+        .expect("区域全音轨 + 端点应接受");
+        assert_eq!(planned[0].audio.len(), 3);
+
+        // 区域零音源拒绝。
+        let err = plan_routes(vec![base_route(region(), AudioMode::Isolated, Vec::new())])
+            .expect_err("区域零音源必须拒绝");
+        assert!(err.contains("E_INVALID_AUDIO_PLAN"), "得到 {err}");
+
+        // 窗口/纯录音端点拒绝矩阵保持（REQ-13）。
+        let err = plan_routes(vec![base_route(
+            TargetIn::Window { hwnd: 42 },
+            AudioMode::AllTracks,
+            vec![endpoint.clone()],
+        )])
+        .expect_err("窗口 + 端点必须拒绝");
+        assert!(err.contains("E_INVALID_AUDIO_PLAN"), "得到 {err}");
+        let err = plan_audio_only(vec![endpoint]).expect_err("纯录音不接受端点");
+        assert!(err.contains("E_INVALID_AUDIO_PLAN"), "得到 {err}");
     }
 }

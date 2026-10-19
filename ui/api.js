@@ -141,8 +141,17 @@ function makeReal() {
      */
     getOverlayGeometry: () => invoke('get_overlay_geometry'),
     /** 创建/复用无边框置顶全屏窗口（label=region-overlay，加载 ui/region.html）。 */
-    openRegionOverlay: () => invoke('open_region_overlay'),
+    openRegionOverlay: (mode = 'screenshot', requestId = null) =>
+      invoke('open_region_overlay', { mode, requestId }),
     closeRegionOverlay: () => invoke('close_region_overlay'),
+    // M18/REQ-21：区域录制上下文/确认/取消（record 路径绝不进截图命令）。
+    getRegionContext: () => invoke('get_region_context'),
+    confirmRegionRecord: (requestId, rect) =>
+      invoke('confirm_region_record', { requestId, rect }),
+    cancelRegionRecord: (requestId) => invoke('cancel_region_record', { requestId }),
+    // 主窗必须先完成监听再打开覆盖层（REQ-21 就绪顺序）。
+    listenRegionTarget: (handler) => window.__TAURI__.event.listen('region_target_added', (event) => handler(event.payload)),
+    listenRegionRecordCancelled: (handler) => window.__TAURI__.event.listen('region_record_cancelled', (event) => handler(event.payload)),
     // mock 专属辅助在真实模式下的安全降级：
     recentRecordings: () => Promise.resolve([]),
   };
@@ -192,12 +201,12 @@ function makeMock() {
   const HKC_CID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const monitorsAll = params.get('monitors_nometa') === '1'
     ? [
-        { index: 0, name: 'Monitor 0', friendly_name: null, device_path: null, container_id: null, width: 3840, height: 2160, x: 0, y: 0, primary: true },
-        { index: 1, name: 'Monitor 1', friendly_name: null, device_path: null, container_id: null, width: 2560, height: 1440, x: 3840, y: 120, primary: false },
+        { index: 0, name: 'Monitor 0', friendly_name: null, gdi_device_name: '\\\\.\\DISPLAY1', device_path: null, container_id: null, width: 3840, height: 2160, x: 0, y: 0, primary: true },
+        { index: 1, name: 'Monitor 1', friendly_name: null, gdi_device_name: '\\\\.\\DISPLAY2', device_path: null, container_id: null, width: 2560, height: 1440, x: 3840, y: 120, primary: false },
       ]
     : [
-        { index: 0, name: 'DELL U2720Q', friendly_name: 'DELL U2720Q', device_path: DEL_DP, container_id: DEL_CID, width: 3840, height: 2160, x: 0, y: 0, primary: true },
-        { index: 1, name: 'HKC MG27Q', friendly_name: 'HKC MG27Q', device_path: HKC_DP, container_id: HKC_CID, width: 2560, height: 1440, x: 3840, y: 120, primary: false },
+        { index: 0, name: 'DELL U2720Q', friendly_name: 'DELL U2720Q', gdi_device_name: '\\\\.\\DISPLAY1', device_path: DEL_DP, container_id: DEL_CID, width: 3840, height: 2160, x: 0, y: 0, primary: true },
+        { index: 1, name: 'HKC MG27Q', friendly_name: 'HKC MG27Q', gdi_device_name: '\\\\.\\DISPLAY2', device_path: HKC_DP, container_id: HKC_CID, width: 2560, height: 1440, x: 3840, y: 120, primary: false },
       ];
   let monitors = monitorsAll.map((m) => ({ ...m }));
   let targetCalls = 0;
@@ -543,12 +552,43 @@ function makeMock() {
         scale: window.devicePixelRatio || 1,
       };
     },
-    async openRegionOverlay() {
+    async openRegionOverlay(mode = 'screenshot', requestId = null) {
       await wait(80);
-      window.open('region.html', 'region-overlay', 'popup');
+      // mock：record 模式经 URL 参数携带上下文；浏览器窗口直接调试 region.html。
+      const q = new URLSearchParams({ mode, request_id: requestId || '' });
+      window.open(`region.html?${q}`, 'region-overlay', 'popup');
       return null;
     },
     async closeRegionOverlay() { return null; },
+    async getRegionContext() {
+      const q = new URLSearchParams(location.search);
+      return { mode: q.get('mode') || 'screenshot', request_id: q.get('request_id') || '' };
+    },
+    async confirmRegionRecord(requestId, rect) {
+      await wait(120);
+      window.SRRegionMock = { requestId, rect };
+      emit({
+        event: 'region_target_added',
+        request_id: requestId,
+        rect,
+        display: { device_name: '\\\\.\\DISPLAY1', device_path: DEL_DP },
+      });
+      return window.SRRegionMock;
+    },
+    async cancelRegionRecord(requestId) {
+      emit({ event: 'region_record_cancelled', request_id: requestId });
+      return null;
+    },
+    async listenRegionTarget(handler) {
+      const fn = (evt) => { if (evt && evt.event === 'region_target_added') handler(evt); };
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    async listenRegionRecordCancelled(handler) {
+      const fn = (evt) => { if (evt && evt.event === 'region_record_cancelled') handler(evt); };
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
   };
 
   function markRecoveryHandled(id) {

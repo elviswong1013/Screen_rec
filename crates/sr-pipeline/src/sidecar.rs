@@ -168,6 +168,63 @@ pub fn probe_named_encoder(name: &str) -> bool {
     }
 }
 
+/// M18/REQ-21：以**真实区域尺寸**实际初始化编码器（探测仍用 256×256）。
+///
+/// 区域路不得缩放/补边；尺寸不受编码器支持时启动必须失败。使用合成源短编码，
+/// 与 D4 探测同口径（8s 兜底）。
+pub fn probe_encoder_size(name: &str, width: u32, height: u32) -> bool {
+    if width < 2 || height < 2 || width % 2 != 0 || height % 2 != 0 {
+        return false;
+    }
+    let exe = match ffmpeg_exe() {
+        Ok(exe) => exe,
+        Err(e) => {
+            eprintln!("[sr-pipeline] 区域尺寸编码器探测失败：{e}");
+            return false;
+        }
+    };
+    let source = format!("color=c=black:s={width}x{height}:r=30:d=0.2");
+    let mut child = match Command::new(exe)
+        .args([
+            "-hide_banner",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            &source,
+            "-c:v",
+            name,
+            "-f",
+            "null",
+            "-",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[sr-pipeline] 区域尺寸编码器探测 spawn 失败：{e}");
+            return false;
+        }
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        match child.try_wait() {
+            Ok(Some(code)) => return code.success(),
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Err(_) => return false,
+        }
+    }
+}
+
 /// 单编码器实际初始化探测（含诊断明细；probe 模块共用——「实际初始化」而非仅枚举）。
 pub(crate) fn probe_encoder_detail(exe: &Path, encoder: &str) -> (bool, String) {
     let mut child = match Command::new(exe)

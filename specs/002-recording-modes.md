@@ -2,12 +2,12 @@
 
 Status: Approved
 Created: 2026-10-18
-Updated: 2026-10-18（plan-reviewer R1：三率域/基础比率/测试覆盖/serde 与 UI 契约；R2：分源捕获策略、实际率传递与计数域、四档测试、JSON 边界容错、查询契约定稿）
+Updated: 2026-10-19（P1 acc-8；P2 acc-10；P3 acc-11/12/13 修复闭环；P4 详规 v5 待审）
 PRD: `docs/prd/002-recording-modes.md`（Approved 2026-10-18）
 
 ## 1. 范围（本版本）
 
-**P1 采样率已实现**（acc-8 ACCEPTED）；**P2 全屏音轨已实现**（acc-10 ACCEPTED）；**P3 MP4 输出已实现（v5，2026-10-18；M17 TDD 红→绿完成）**；P4/P5 见 §7 占位。
+**P1 采样率已实现**（acc-8 ACCEPTED）；**P2 全屏音轨已实现**（acc-10 ACCEPTED）；**P3 MP4 输出已实现**（acc-11/12/13 修复闭环；AC-8 人工项待用户）；**P4 区域视频已实现**（M18，2026-10-19；acceptor ACCEPTED，源码验收；安装包未重建）；P5 见 §7 占位。
 
 **对 001 spec 条款的保留/覆盖声明**：
 - 001 REQ-14/18（音轨身份与隔离）、REQ-19（纯录音）、REQ-26（漂移核语义：校正阈值、Hold/Track 行为）全部**保留**，仅采样率数值域参数化。
@@ -94,6 +94,22 @@ PRD: `docs/prd/002-recording-modes.md`（Approved 2026-10-18）
 - **REQ-19（AC-8）成品可播 + 人工验收**：ffprobe 断言容器族（`format_name` 属 `mov,mp4,m4a,3gp,3g2,mj2`，**不得断言 =="mp4"**）、逐轨率/声道/内容 FFT、整文件解码、时长容差、同步（复用 `sync_dual.rs:569-660` 断言口径）。**具名 L3 人工验收**：系统自带播放器播放 MP4 并记录 OS/播放器版本/画面/声音/同步。**高采样率风险**：Windows AAC Decoder 不支持 >48kHz（官方文档）——88.2k/96k MP4 存在播放兼容风险；**不得为过验收静默降采样或转码**，不兼容时提交用户裁决并记录为已知限制。
 - **REQ-20（回归）**：全部既有回归（含 P1 四档率、P2 端点链路、两套 UI runner）；mkv 默认路径零行为变化（sync_dual 48k 基线）。
 
+### 3.4 P4 区域视频录制（v5，已批准；M18 TDD）
+
+- **REQ-21（AC-9）区域目标与选择流程**：
+  - **尺寸口径**：输出尺寸 = 选区物理像素**向下取偶吸附**（NV12/编码约束）；覆盖层实时显示吸附后**最终尺寸**并要求确认，禁止确认后静默少像素。**最小有效尺寸与编码器支持**：<64×64 或编码器不支持的尺寸 → 启动失败并明确提示（不静默缩放/补边）；编码器探测仍用 256×256，实际尺寸在区域路启动时以真实参数初始化验证。
+  - **单屏限制**：v1 仅接受完全位于单个显示器内的矩形；跨屏/空洞/越界 → 明确拒绝（截图跨屏拼合能力不受影响）。Gate 2 待确认限制之一。
+  - **overlay record 协议（含初始化上下文与 ACL）**：`open_region_overlay(mode, request_id)` async（WebView2 重入约束；默认 screenshot 兼容；request_id 主窗生成随调用传入）；**overlay 初始化上下文经 `get_region_context()` 拉取 `{mode, request_id}`**（首次创建与复用窗口一致；复用异模式以最新代次为准，旧代次结果丢弃）；就绪顺序：主窗建立监听并确认就绪 → open → overlay 拉取上下文 → 用户操作；record 确认 = `confirm_region_record(request_id, rect)` 返回载荷 `{request_id, rect, display{device_name, device_path}}` 并经 `region_target_added` 事件交付主窗（交付前代次复核、一次性交付）；`cancel_region_record(request_id)` 使迟到确认失效；event.listen 所需最小 ACL 授权（`core:event:allow-listen/unlisten` 或既有 Channel 等价路径）写入 capabilities 并以**真实 Tauri 验证**（现状 capabilities `{}`，Tauri 2.12.4 ACL 会拒绝）；record 路径绝不进截图命令；确认成功 → 隐藏（DwmFlush+≥150ms）→ 交付 → 结束生命周期；失败提示可见。
+  - 录制启动仍走标准入口；`ui/api.js` real/mock + 命令注册同步。
+- **REQ-22（AC-9）裁剪链与 DTO**：
+  - **IPC DTO 定稿（含截图兼容）**：`TargetIn::Region { display_device: String, rect: {x,y,w,h} }`——`display_device` 为**稳定设备路径**（P2 device_path；路径不可得回退 **GDI `szDevice`**——`MonitorEntry`/`MonitorOut` 需新增 `gdi_device_name` 保留链路，**不得用友好名代替**；两者皆缺 → 启动拒绝）。共享字段以 serde 默认值保持**旧截图 JSON 反序列化兼容**，录制入口强制校验；`commands.rs:74-80` 与映射 `:1404-1412` 同步扩展（现状丢弃 rect）；旧截图 JSON 兼容回归测试入 §4。
+  - **坐标与边界**：帧内 crop = 桌面 rect − 显示器原点（左上）；**调用前校验** `0 ≤ start < end ≤ frame 尺寸`（锁定库 `frame.rs:188-218` 不检查终点越界）；显示器不存在/矩形不包含/越界 → 启动失败或停路并明确原因。
+  - **裁剪**：`Frame::buffer_crop` BGRA 帧内裁剪 → 同尺寸 NV12；pacer/最近帧/CFR 不变；禁止整屏缩放冒充裁剪；区域路 `video.canvas_*` 不生效（区域尺寸=唯一编码尺寸，无 letterbox）；窗口/显示器路径不变。
+- **REQ-23（AC-10）音轨矩阵（防隔离泄音）**：区域隔离模式 = **仅所选应用**各自独立轨，不隐式加入设备混音；端点音源仅全音轨模式可选（按 P2 匹配/手选，与系统同 ID 去重；§5 的「端点适用于显示器目标」在本条区域全音轨例外）；全音轨 = 系统+麦克风+追加应用（+可选端点）；`buildAudioPlan` 为区域拆独立分支（`app.js:570-602` 不得直接复用）；命令层接受矩阵扩展时保留窗口/纯录音拒绝与 P2 勾选语义（`commands.rs:1322-1333`）；零音源拒绝。端点仅全音轨为 Gate 2 待确认限制之二。
+- **REQ-24（AC-11）失效传播、恢复与合并**：
+  - **检测与顺序（含闩锁）**：显示器失效来源 = WGC `on_closed` + 显示器设备/几何通知（由路由线程订阅/轮询并在路由结束时清理；DisplayConfig 现仅快照查询需扩展）；捕获生产者**在标记 capture_ended 之前同步闩锁 first_cause**（`RegionSourceLost{reason}`）；worker 检测到 capture_ended 后**再次读取 first_cause** 再决定收尾——杜绝「检查为空 → 事件入队 → 结束」竞态；E_TARGET_LOST 含区域原因（复用 P2 notice）；无新帧/静止桌面不得判失效；分辨率变化/crop 越界 → 停路保留原因、不无限重复旧帧或重新缩放；音频端点失效保留 P2 语义。
+  - **恢复/合并无区域分支**（前提：标准路由 + start_routes_impl 快照入口；恢复按清单 streams；合并全轨流拷贝支持异构尺寸）；区域+窗口并发允许。
+
 ## 4. 测试计划（REQ → 测试映射）
 
 | REQ | 测试 | 层 |
@@ -124,14 +140,21 @@ PRD: `docs/prd/002-recording-modes.md`（Approved 2026-10-18）
 | REQ-18 | `it_recovery_container_mp4`（**仅 L2 媒体侧**）：恢复产出容器与设置一致、有效 final_path 幂等复用（不重生另一容器）；**设置变更时机断言全部迁命令层 L1**：`unit_commands_recovery_settings_snapshot_once`（注入生产读取边界，断言 **Settings 快照提供者总共调用一次、output_dir/keep_segments/output_container 三字段来自同一快照**）；`it_merge_mp4_inputs`：MP4+MP4、MP4+MKV→MKV，输出 matroska | L1/L2 |
 | REQ-19 | `it_sync_dual_container_mp4`（**具名 MP4 同步变体，分析 MP4 本身**）：覆盖开始/中段/结束/段边界偏差与漂移断言（复用 `sync_dual.rs:569-660` 口径），MKV 基线保留；L3 人工：系统播放器播放 MP4（OS/播放器/画面/声音/同步）；88.2k/96k 不兼容时用户裁决（不静默降采样） | L2/L3 |
 | REQ-20 | 回归清单明确：P1 四档率 + P2 端点链路 + route/recovery/m11_*/sync_dual 48k + 两套 UI runner（mkv 默认零变化） | L2 |
+| REQ-21 | `tools/ui/region-record.mjs`（**具名 Node/CDP runner**）：拖拽→吸附后尺寸预览+确认→目标出现；Esc→无目标/无文件/无残留；跨屏/越界拒绝；重复打开异模式状态正确；迟到确认（request_id 失效）丢弃；隐藏时序（E2E 像素断言复用）；`unit_region_record_geometry_*`（150% DPI+向下取偶+单屏包含+<64×64 拒绝） | L1/静态 |
+| REQ-22 | `tests/sr-itests/tests/region_video.rs`：`it_region_video_rect`（~10s，非零偏移/非屏幕宽高比/选区内外不同图案）→ ffprobe 尺寸=吸附后物理矩形、时长、**裁剪内容断言**（排除整屏缩小/裁错位）；48k/96k 各一；`it_region_size_unsupported_rejects`（编码器不支持尺寸→启动失败不缩放/补边） | L2 |
+| REQ-22 | **真实 GUI E2E 承担贯通断言**（扩展 `tools/e2e/region-e2e.ps1` mode=record）：经 record 入口开录 → 首帧与后续帧无覆盖层（NV12/H.264 帧断言，不复用 PNG 阈值）；**同次 E2E 断言成品轨数与所选/未选音调（FFT）**——DTO→命令→成品贯通证据；区域尺寸非整屏 | L2/E2E |
+| REQ-22 | `unit_region_ipc_dto_*`（命令层 L1）：display_device 稳定路径→GDI szDevice 回退→皆缺拒绝；桌面→帧内坐标公式与越界校验；**旧截图 JSON 反序列化兼容回归**；`unit_commands_source_rejection_*`：区域隔离下端点直接 IPC 拒绝、窗口/纯录音端点拒绝矩阵（不得用手拼管线配置替代） | L1 |
+| REQ-23 | `it_region_video_audio_modes`：隔离=仅所选应用（无设备混音泄漏，FFT 负例）；全音轨含系统+麦克风+应用（+端点同/不同 ID 去重）；端点仅全音轨（拒绝矩阵见命令层 L1 行）；零音源拒绝；麦克风缺设备仅 BLOCKED 该分项 | L2 |
+| REQ-24 | `it_region_display_lost_keeps_others`（失效→E_TARGET_LOST+notice、其它路继续；**失效后收尾失败仍保留 notice**）；**`it_region_latch_interleaving`（屏障式确定性交错：worker 读空→生产者闩锁 first_cause→capture ended→worker 重读；成功与收尾失败两分支均保留 notice）**；`it_region_video_recovery`（**强杀录制宿主子进程**，复用 `recovery.rs:510-571` 手法→恢复→尺寸/全部流/解码正确）；`it_region_container_mp4`；`it_region_merge`（异构尺寸）；区域+窗口并发；分辨率变化/crop 越界用例 | L2 |
 
 执行命令口径：L1 `cargo test --workspace`；L2 逐套件 `cargo test -p sr-itests --test <suite> -- --ignored --nocapture --test-threads=1`（`SESSIONNAME=Console`，独占机器，运行期保持唤醒）。
 
 ## 5. Out of scope
 
 - 端点独占模式捕获、位深/声道数选择、每路不同采样率（全局单设置）。
-- P4–P5 任何实现。
-- P2 是 001「仅默认端点」窄范围（001:54,297）的扩展：端点音源仅适用于显示器目标；窗口目标的隔离限制不变。
+- P5 任何实现。
+- P4 的跨屏选区（v1 仅单屏；截图跨屏能力不受影响）。
+- P2 是 001「仅默认端点」窄范围（001:54,297）的扩展：端点音源适用于显示器目标（窗口目标的隔离限制不变）；**P4 例外**：区域目标在全音轨模式下同样可选端点（隔离模式仍仅所选应用，见 §3.4 REQ-23）。
 
 ## 6. 风险
 
@@ -151,7 +174,7 @@ PRD: `docs/prd/002-recording-modes.md`（Approved 2026-10-18）
 |---|---|---|---|
 | P2 | 全屏音轨（屏幕↔HDMI/DP 端点关联） | AC-4..5 | **详规 §3.2 v7 已批准（2026-10-18）；M16 已实现（TDD 红→绿，见 §8）** |
 | P3 | MP4 输出（MKV 分段 + 收尾流拷贝 remux） | AC-6..8 | **§3.3 v5 已批准（2026-10-18）；M17 已实现（TDD 红→绿，见 §8）** |
-| P4 | 区域视频录制（音轨跟随音轨模式） | AC-9..11 | P3 后 |
+| P4 | 区域视频录制（音轨跟随音轨模式） | AC-9..11 | **§3.4 v5 已批准（2026-10-19）；M18 已实现，acceptor ACCEPTED（源码验收，见 §8）** |
 | P5 | 窗口内容区（UIA spike 门控，仅 Chrome/Edge + 手动微调） | AC-12..14 | spike 先行 |
 
 ## 8. 里程碑
@@ -160,4 +183,5 @@ PRD: `docs/prd/002-recording-modes.md`（Approved 2026-10-18）
 |---|---|---|
 | M15（P1） | 采样率可选（REQ-1..8） | **已实现，acc-8 ACCEPTED（2026-10-18）**（L1/L2 证据：`docs/milestones/m15-report.md`；audio_m6 麦克风正路径本机无采集设备 → BLOCKED） |
 | M16（P2） | 全屏音轨（REQ-9..15） | **已实现，acc-10 ACCEPTED（2026-10-18）**：acc-9 两项 P1（终态单调/Ambiguous 首项）修复后复审通过；详见 `docs/milestones/m16-report.md` |
-| M17（P3） | MP4 输出（REQ-16..20） | **已实现（TDD 红→绿完成，2026-10-18）**：L1 全绿；L2 §4 P3 全行 + 回归绿（端点+麦克风组合因本机无采集设备 → BLOCKED；不静默 skip）；L3 人工待办见 `docs/milestones/m17-report.md`。acceptor 待跑 |
+| M17（P3） | MP4 输出（REQ-16..20） | **已实现（acc-11/12/13 修复闭环，2026-10-19）**：container 14/14（debug）；acc-12 两项 P2 修复经 acc-13 复审通过；**AC-8 系统播放器人工记录待用户**；端点+麦克风组合因本机无采集设备 → BLOCKED；L3 见 `docs/milestones/m17-report.md` |
+| M18（P4） | 区域视频录制（REQ-21..24） | **已实现，acceptor ACCEPTED（源码验收，2026-10-19）**：L1 全绿；L2 `region_video` 10/10；E2E record（含真实 UI 隔离双应用）+ 区域截图回归全 PASS；M18b 生命周期修复后复审通过；**安装包未重建**；麦克风/真实 96k 捕获/多视频轨播放器矩阵仍 BLOCKED/待签；详见 `docs/milestones/m18-report.md` |

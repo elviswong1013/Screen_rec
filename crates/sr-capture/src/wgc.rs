@@ -20,6 +20,7 @@ use windows_capture::window::Window;
 
 use crate::canvas::CanvasConverter;
 use crate::pacer::{FrameAction, FramePacer};
+use crate::region::{CaptureLossLatch, RegionConverter, RegionCrop};
 
 /// WGC SystemRelativeTime 为 TimeSpan（100ns 单位，QPC 域）。
 pub const WGC_TICKS_PER_SEC: i64 = 10_000_000;
@@ -58,6 +59,18 @@ impl LatestFrame {
     }
 }
 
+/// 区域捕获配置（M18/REQ-22/24）：显示器帧内裁剪 + 生产者失效闩锁。
+#[derive(Clone, Debug)]
+pub struct RegionCapture {
+    /// 相对显示器帧左上角的裁剪矩形（调用前已校验，回调内仍按实际帧复验）。
+    pub crop: RegionCrop,
+    /// 启动时显示器物理尺寸（分辨率变化 → 停路保留原因）。
+    pub full_width: u32,
+    pub full_height: u32,
+    /// WGC `on_closed` / 尺寸变化/crop 越界时同步闩锁首因（worker 结束后重读）。
+    pub loss: CaptureLossLatch,
+}
+
 /// 帧转发器配置（经 `Flags` 传入捕获线程；画布尺寸随行）。
 pub struct ForwarderFlags {
     pub canvas_w: u32,
@@ -65,6 +78,8 @@ pub struct ForwarderFlags {
     pub fps: u32,
     /// 最近帧槽（回调写入，发送线程消费）。
     pub latest: Arc<LatestFrame>,
+    /// 区域裁剪（None = 既有窗口/显示器画布路径）。
+    pub region: Option<RegionCapture>,
 }
 
 /// 帧转发器内部错误（本类型仅为 trait 约束占位）。
@@ -80,11 +95,19 @@ impl std::fmt::Display for ForwarderError {
 /// 会话控制句柄（`stop()` 消费并 join 捕获线程）。
 pub type StreamControl = CaptureControl<FrameForwarder, ForwarderError>;
 
-/// 帧 → 槽 → 画布 → 最近帧槽的回调体（捕获线程私有，无锁）。
+/// 帧 → 槽 → 画布/区域 → 最近帧槽的回调体（捕获线程私有，无锁）。
 pub struct FrameForwarder {
     pacer: FramePacer,
-    canvas: CanvasConverter,
+    /// 画布（窗口/显示器既有路径）或区域同尺寸转换（M18）。
+    converter: Converter,
     latest: Arc<LatestFrame>,
+    /// 区域配置（含失效闩锁）；None = 非区域目标。
+    region: Option<RegionCapture>,
+}
+
+enum Converter {
+    Canvas(CanvasConverter),
+    Region(RegionConverter),
 }
 
 impl GraphicsCaptureApiHandler for FrameForwarder {
@@ -97,18 +120,24 @@ impl GraphicsCaptureApiHandler for FrameForwarder {
             canvas_h,
             fps,
             latest,
+            region,
         } = ctx.flags;
+        let converter = match &region {
+            Some(r) => Converter::Region(RegionConverter::new(r.crop.width(), r.crop.height())),
+            None => Converter::Canvas(CanvasConverter::new(canvas_w, canvas_h)),
+        };
         Ok(Self {
             pacer: FramePacer::new(fps, WGC_TICKS_PER_SEC),
-            canvas: CanvasConverter::new(canvas_w, canvas_h),
+            converter,
             latest,
+            region,
         })
     }
 
     fn on_frame_arrived(
         &mut self,
         frame: &mut Frame,
-        _capture_control: InternalCaptureControl,
+        capture_control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
         // 最小化/零尺寸占位帧：不出帧（补帧属 REQ-13 后续契约）。
         if frame.width() == 0 || frame.height() == 0 {
@@ -117,6 +146,37 @@ impl GraphicsCaptureApiHandler for FrameForwarder {
         // 源时间戳（100ns ticks）→ 槽决策；重复/迟到帧不更新最近帧（REQ-10）。
         let ts = frame.timestamp().map(|t| t.Duration as i64).unwrap_or(0);
         if !matches!(self.pacer.on_frame(ts), FrameAction::Write { .. }) {
+            return Ok(());
+        }
+        if let Some(region) = &self.region {
+            // REQ-24：分辨率变化/crop 越界 → 生产者先闩锁首因再停采集（不重复旧帧/不缩放）。
+            if let Err(reason) = crate::region::validate_region_frame(
+                &region.crop,
+                region.full_width,
+                region.full_height,
+                frame.width(),
+                frame.height(),
+            ) {
+                region.loss.latch(reason);
+                capture_control.stop();
+                return Ok(());
+            }
+            let buffer = match frame.buffer_crop(
+                region.crop.start_x,
+                region.crop.start_y,
+                region.crop.end_x,
+                region.crop.end_y,
+            ) {
+                Ok(b) => b,
+                Err(_) => return Ok(()), // 单帧读取失败不终止会话（下一帧恢复）
+            };
+            let (w, h) = (buffer.width(), buffer.height());
+            let mut padding_scratch = Vec::new();
+            let compact: &[u8] = buffer.as_nopadding_buffer(&mut padding_scratch);
+            if let Converter::Region(conv) = &mut self.converter {
+                let nv12 = conv.convert_exact(compact, w, h);
+                self.latest.set(nv12);
+            }
             return Ok(());
         }
         // 帧缓冲（BGRA；去行 padding）→ 固定画布 NV12 → 更新最近帧槽。
@@ -128,14 +188,20 @@ impl GraphicsCaptureApiHandler for FrameForwarder {
         let mut padding_scratch = Vec::new();
         // 无 padding 时库内零拷贝直返；有 padding 时拷入 scratch（紧凑行）。
         let compact: &[u8] = buffer.as_nopadding_buffer(&mut padding_scratch);
-        let nv12 = self.canvas.convert(compact, w, h);
-        self.latest.set(nv12);
+        if let Converter::Canvas(canvas) = &mut self.converter {
+            let nv12 = canvas.convert(compact, w, h);
+            self.latest.set(nv12);
+        }
         Ok(())
     }
 
     /// WGC 目标窗口关闭/捕获项失效（会话终止的正常来源）。
     /// `SR_DIAG_AV=1` 时打点：用于区分「目标关闭」与「采集线程静默结束」。
     fn on_closed(&mut self) -> Result<(), Self::Error> {
+        // REQ-24：区域生产者必须在 capture_ended 之前同步闩锁首因（worker 之后重读）。
+        if let Some(region) = &self.region {
+            region.loss.latch("WGC 捕获项已关闭（显示器或捕获源失效）");
+        }
         if diag_enabled() {
             eprintln!("[diag-video] WGC capture item closed (window destroyed / item invalidated)");
         }
@@ -181,6 +247,7 @@ pub fn start_window_stream(
             canvas_h,
             fps,
             latest,
+            region: None,
         },
     ))
 }
@@ -211,6 +278,55 @@ pub fn start_monitor_stream(
             canvas_h,
             fps,
             latest,
+            region: None,
+        },
+    ))
+}
+
+/// 启动单路区域捕获（M18/REQ-22）：显示器帧内 crop → 同尺寸 NV12。
+///
+/// `full_width/full_height` = 显示器启动时物理尺寸；回调按实际帧复验（分辨率变化停路）。
+pub fn start_region_stream(
+    index: u32,
+    full_width: u32,
+    full_height: u32,
+    crop: RegionCrop,
+    fps: u32,
+    cursor: bool,
+    latest: Arc<LatestFrame>,
+    loss: CaptureLossLatch,
+) -> Result<StreamControl, StreamStartError> {
+    if full_width < 2 || full_height < 2 {
+        return Err(StreamStartError::TargetInvalid {
+            detail: format!("显示器尺寸无效：{full_width}x{full_height}"),
+        });
+    }
+    if let Err(e) = crop.validate_for_frame(full_width, full_height) {
+        return Err(StreamStartError::TargetInvalid { detail: e });
+    }
+    let monitor =
+        Monitor::from_index(index as usize + 1).map_err(|e| StreamStartError::TargetInvalid {
+            detail: format!("显示器 index={index} 不存在: {e}"),
+        })?;
+    start_stream(Settings::new(
+        monitor,
+        cursor_setting(cursor),
+        DrawBorderSettings::Default,
+        SecondaryWindowSettings::Default,
+        MinimumUpdateIntervalSettings::Default,
+        DirtyRegionSettings::Default,
+        ColorFormat::Bgra8,
+        ForwarderFlags {
+            canvas_w: crop.width(),
+            canvas_h: crop.height(),
+            fps,
+            latest,
+            region: Some(RegionCapture {
+                crop,
+                full_width,
+                full_height,
+                loss,
+            }),
         },
     ))
 }

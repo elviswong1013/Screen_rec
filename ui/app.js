@@ -89,6 +89,12 @@ const state = {
   targetTab: 'windows',
   search: '',
   selected: new Set(),       // 'monitor:0' | 'window:66050'
+  regionTarget: null,        // M18：{display_device, rect, display{device_name,device_path}}
+  regionRequestId: null,     // M18b：当前 record overlay 的 request_id（stale 事件过滤）
+  regionAudio: {             // M18/REQ-23：区域独立音源勾选（不重用显示器分支）
+    endpointSelected: false, endpointDeviceId: '', systemSelected: true,
+    micSelected: false, apps: new Set(),
+  },
   recordMode: 'screen',      // 'screen' | 'audio'
   cfg: {
     canvas: '1920x1080', fps: 30, cursor: true,
@@ -105,10 +111,11 @@ const state = {
   starting: false,
 };
 
-const targetKey = (t) => (t.hwnd !== undefined ? `window:${t.hwnd}` : `monitor:${t.index}`);
+const targetKey = (t) => (t.hwnd !== undefined ? `window:${t.hwnd}` : (t.kind === 'region' || t.rect ? 'region:0' : `monitor:${t.index}`));
 
 function findTarget(key) {
   const [kind, id] = key.split(':');
+  if (kind === 'region') return state.regionTarget ? { ...state.regionTarget, kind: 'region' } : undefined;
   if (kind === 'monitor') return state.monitors.find((m) => m.index === Number(id));
   return state.windows.find((w) => w.hwnd === Number(id));
 }
@@ -190,6 +197,22 @@ async function refreshTargets() {
     state.renderEndpoints = eps || [];
     // M16/REQ-10：刷新后手选不覆盖；稳定 device_path 换序不串屏。
     state.monitorSel = reconcileMonitorSelections(state.monitorSel, state.monitors, state.renderEndpoints);
+    // M18：区域目标跟随稳定设备身份刷新（path 优先，GDI 回退），不改变用户选区。
+    if (state.regionTarget) {
+      const rt = state.regionTarget;
+      const dev = rt.display?.device_path || rt.display?.device_name || '';
+      const m = state.monitors.find((x) =>
+        (dev && (x.device_path === dev || x.gdi_device_name === dev))
+        || (x.x <= rt.rect.x && x.y <= rt.rect.y
+          && x.x + x.width >= rt.rect.x + rt.rect.w
+          && x.y + x.height >= rt.rect.y + rt.rect.h));
+      if (m) {
+        rt.display = {
+          device_name: m.gdi_device_name || rt.display?.device_name || '',
+          device_path: m.device_path || null,
+        };
+      }
+    }
     // 目标选择同样按 device_path 迁移（index 交换后仍指向同一物理屏）。
     const nextSelected = new Set([...state.selected].filter((k) => !k.startsWith('monitor:')));
     for (const path of selectedMonitorPaths) {
@@ -333,6 +356,7 @@ function renderConfig() {
     .filter(Boolean);
   const hasMonitorTarget = selectedMonitors.length > 0;
   const hasWindowTarget = [...state.selected].some((k) => k.startsWith('window:'));
+  const hasRegionTarget = !!state.regionTarget;
   const micName = micOk ? esc(state.audioDevices.find((d) => d.id === state.settings.mic_device)?.name || state.settings.mic_device) : '';
   const micHint = micOk ? micName : state.caps?.mic_ok !== true ? '权限未允许或无设备' : '未在设置中选择设备';
 
@@ -364,12 +388,13 @@ function renderConfig() {
   const monitorHtml = selectedMonitors
     .map((m) => monitorAudioHtml(m, loopbackOk, micOk, micHint))
     .join('');
+  const regionHtml = hasRegionTarget ? regionAudioHtml(loopbackOk, micOk, micHint) : '';
 
   let audioHtml;
-  if (!hasWindowTarget && !hasMonitorTarget) {
+  if (!hasWindowTarget && !hasMonitorTarget && !hasRegionTarget) {
     audioHtml = '<div class="hint">选择目标后，此处按目标类型给出可用音源。</div>';
   } else {
-    audioHtml = `${windowHtml}${monitorHtml}`;
+    audioHtml = `${windowHtml}${monitorHtml}${regionHtml}`;
   }
 
   panel.innerHTML = `
@@ -383,6 +408,7 @@ function renderConfig() {
         </select>
       </div>
     </div>
+    ${hasRegionTarget ? '<div class="hint" style="margin:-4px 0 8px;">区域录制按选区物理尺寸输出（向下取偶）；画布设置不生效，不做缩放/补边。</div>' : ''}
     ${checkRow('cfg-cursor', '捕获光标', cfg.cursor)}
     <div class="field" style="margin-top:10px;">
       <label>音轨模式</label>
@@ -395,6 +421,7 @@ function renderConfig() {
         全音轨：目标应用 + 系统 + 麦克风 + 追加应用，全部独立成轨
       </label>
       ${hasMonitorTarget ? '<div class="hint">显示器目标使用全音轨传输契约：每屏逐项勾选均如实计入；切换隔离/全音轨不清除勾选。</div>' : ''}
+      ${hasRegionTarget ? '<div class="hint">区域隔离=仅所选应用各自独立成轨（不含系统/麦克风）；全音轨=系统+麦克风+追加应用（+可选端点）。</div>' : ''}
     </div>
     <div class="field"><label>音源</label>${audioHtml}</div>
     <div class="field">
@@ -459,6 +486,31 @@ function renderConfig() {
     }));
   }
 
+  // M18/REQ-23：区域独立音源勾选（仅全音轨显示端点/系统/麦克风；隔离仅应用）。
+  if (hasRegionTarget) {
+    const ra = state.regionAudio;
+    bindCheck('#cfg-region-endpoint', (v) => {
+      ra.endpointSelected = v;
+      if (!v) ra.endpointDeviceId = '';
+      renderConfig();
+      renderStartBar();
+    });
+    const epSelect = $('#cfg-region-endpoint-select', panel);
+    if (epSelect) {
+      epSelect.addEventListener('change', () => {
+        ra.endpointDeviceId = epSelect.value || '';
+        ra.endpointSelected = !!epSelect.value;
+        renderStartBar();
+      });
+    }
+    bindCheck('#cfg-region-system', (v) => { ra.systemSelected = v; renderStartBar(); });
+    bindCheck('#cfg-region-mic', (v) => { ra.micSelected = v; renderStartBar(); });
+    state.audioSources.forEach((a) => bindCheck(`#cfg-region-app-${a.pid}`, (v) => {
+      v ? ra.apps.add(a.pid) : ra.apps.delete(a.pid);
+      renderStartBar();
+    }));
+  }
+
   function bindCheck(sel, fn) {
     const el = $(sel, panel);
     if (el) el.addEventListener('change', () => { fn(el.checked); });
@@ -512,6 +564,43 @@ function monitorAudioHtml(m, loopbackOk, micOk, micHint) {
     </div>`;
 }
 
+// M18/REQ-23：区域音源区（独立分支；隔离仅应用，全音轨可选端点/系统/麦克风/应用）。
+function regionAudioHtml(loopbackOk, micOk, micHint) {
+  const ra = state.regionAudio;
+  const isolated = state.cfg.audioMode === 'isolated' && loopbackOk;
+  const apps = state.audioSources.map((a) =>
+    checkRow(`cfg-region-app-${a.pid}`, `${esc(a.app_name)}`, ra.apps.has(a.pid), !loopbackOk, `${esc(a.process_name)} · PID ${a.pid}${a.active ? '' : ' · 未在发声'}`)).join('');
+  if (isolated) {
+    return `
+      <div class="field monitor-audio" data-region-audio="isolated">
+        <label>区域音源 · 隔离（仅所选应用）</label>
+        <div class="hint">仅所选应用各自独立成轨；不隐式加入系统混音/麦克风/端点。</div>
+        ${apps || '<div class="empty">当前没有正在发声的应用</div>'}
+        <div class="hint">至少选择 1 个应用；否则启动会被拒绝。</div>
+      </div>`;
+  }
+  const active = state.renderEndpoints.filter((e) => e.is_active !== false);
+  const endpointId = ra.endpointDeviceId || '';
+  const options = [
+    `<option value="" ${endpointId ? '' : 'selected'}>不启用端点（使用系统混合）</option>`,
+    ...active.map((e) => `<option value="${esc(e.device_id)}" ${endpointId === e.device_id ? 'selected' : ''}>${esc(e.friendly_name)}</option>`),
+  ].join('');
+  return `
+    <div class="field monitor-audio" data-region-audio="all_tracks">
+      <label>区域音源 · 全音轨</label>
+      <div class="hint">系统 + 麦克风 + 追加应用；可选该屏输出端点（与系统同 ID 时后端去重）。</div>
+      ${loopbackOk ? `
+        ${checkRow('cfg-region-endpoint', '输出端点（可选，手选）', ra.endpointSelected, !loopbackOk)}
+        <select id="cfg-region-endpoint-select" style="margin:2px 0 8px;">${options}</select>` : ''}
+      ${checkRow('cfg-region-system', '系统音频（整机混合）', ra.systemSelected)}
+      ${checkRow('cfg-region-mic', '麦克风（独立音轨）', ra.micSelected, !micOk, micHint)}
+      <div class="field" style="margin-top:8px;">
+        <label>追加应用音源（启动时快照）</label>
+        ${apps || '<div class="empty">当前没有正在发声的应用</div>'}
+      </div>
+    </div>`;
+}
+
 // 纯录音左栏：音源多选
 function renderAudioSourcesPanel(body, store) {
   const micOk = state.caps?.mic_ok === true && !!state.settings?.mic_device;
@@ -541,12 +630,14 @@ function renderStartBar() {
   const [w, h] = state.cfg.canvas.split('x');
   let summary, canStart, label;
   if (state.recordMode === 'screen') {
-    const n = state.selected.size;
+    const n = state.selected.size + (state.regionTarget ? 1 : 0);
     summary = n
-      ? `已选 <b>${n}</b> 个目标 · ${w}×${h} @${state.cfg.fps}fps · ${state.cfg.audioMode === 'isolated' ? '隔离' : '全音轨'}`
+      ? `已选 <b>${n}</b> 个目标${state.regionTarget ? `（区域 ${state.regionTarget.rect.w}×${state.regionTarget.rect.h}）` : ''} · ${w}×${h} @${state.cfg.fps}fps · ${state.cfg.audioMode === 'isolated' ? '隔离' : '全音轨'}`
       : '先在左侧选择要录制的窗口或显示器（可多选，每路独立输出）';
-    canStart = n > 0 && !!state.caps?.encoders.some((e) => e.available);
+    const regionBlocked = state.regionTarget && regionSourceCount() === 0;
+    canStart = n > 0 && !!state.caps?.encoders.some((e) => e.available) && !regionBlocked;
     label = n > 1 ? `开始录制（${n} 路）` : '开始录制';
+    if (regionBlocked) summary += ' · <span class="muted">区域目标尚未选择音源</span>';
   } else {
     const n = audioOnlySourceCount();
     summary = n ? `已选 <b>${n}</b> 个音源 · 各输出独立 WAV` : '先在左侧选择至少一个音源';
@@ -634,6 +725,55 @@ function buildAudioPlan(target) {
   return { mode, sources, labels };
 }
 
+// M18/REQ-23：区域音轨计划独立分支（不得复用显示器 buildAudioPlan）。
+function buildRegionAudioPlan() {
+  const cfg = state.cfg;
+  const ra = state.regionAudio;
+  const loopbackOk = state.caps?.loopback_ok !== false;
+  const mode = (loopbackOk && cfg.audioMode === 'isolated') ? 'isolated' : 'all_tracks';
+  const sources = [];
+  const labels = [];
+  const addApp = (pid, created, name) => {
+    if (sources.some((s) => s.kind === 'app' && s.pid === pid)) return;
+    sources.push({ kind: 'app', pid, created_at_unix_ms: created ?? 0 });
+    labels.push(`应用 · ${name}`);
+  };
+  if (mode === 'isolated') {
+    // 区域隔离 = 仅所选应用（不隐式设备混音/麦克风/端点）。
+    for (const pid of ra.apps) {
+      const a = state.audioSources.find((x) => x.pid === pid);
+      if (a) addApp(a.pid, a.created_at_unix_ms, a.app_name);
+    }
+    return { mode, sources, labels };
+  }
+  // 顺序 [endpoint, system, mic, apps]（与显示器/窗口标签序一致）。
+  if (ra.endpointSelected && ra.endpointDeviceId) {
+    const ep = state.renderEndpoints.find((e) => e.device_id === ra.endpointDeviceId);
+    sources.push({ kind: 'render_endpoint', device_id: ra.endpointDeviceId });
+    labels.push(`端点 · ${ep?.friendly_name || ra.endpointDeviceId}`);
+  }
+  if (ra.systemSelected) {
+    sources.push({ kind: 'system' });
+    labels.push('系统音频');
+  }
+  if (ra.micSelected && state.settings?.mic_device) {
+    sources.push({ kind: 'mic', device_id: state.settings.mic_device });
+    labels.push('麦克风');
+  }
+  for (const pid of ra.apps) {
+    const a = state.audioSources.find((x) => x.pid === pid);
+    if (a) addApp(a.pid, a.created_at_unix_ms, a.app_name);
+  }
+  return { mode, sources, labels };
+}
+
+function regionSourceCount() {
+  const ra = state.regionAudio;
+  if (state.cfg.audioMode === 'isolated' && state.caps?.loopback_ok !== false) return ra.apps.size;
+  return (ra.endpointSelected ? 1 : 0) + (ra.systemSelected ? 1 : 0)
+    + (ra.micSelected && state.settings?.mic_device ? 1 : 0) + ra.apps.size;
+}
+
 async function startRecording() {
   if (state.starting) return;
   state.starting = true;
@@ -655,10 +795,34 @@ async function startRecording() {
           _ui_track_labels: audio.labels,
         };
       });
+      // M18：区域目标（独立分支；display_device 只用稳定路径或 GDI szDevice）。
+      if (state.regionTarget) {
+        const rt = state.regionTarget;
+        const displayDevice = rt.display?.device_path || rt.display?.device_name || rt.display_device || '';
+        if (!displayDevice) {
+          toast('warn', '区域目标缺少稳定显示器标识（设备路径/GDI 名称），请重新框选');
+          state.starting = false;
+          renderStartBar();
+          return;
+        }
+        const audio = buildRegionAudioPlan();
+        routeCfgs.push({
+          target: {
+            kind: 'region',
+            display_device: displayDevice,
+            rect: { x: rt.rect.x, y: rt.rect.y, w: rt.rect.w, h: rt.rect.h },
+          },
+          video: { canvas_w: cw, canvas_h: ch, fps: state.cfg.fps, cursor: state.cfg.cursor },
+          audio: { mode: audio.mode, sources: audio.sources },
+          output_dir: outDir,
+          _ui_label: `区域 ${rt.rect.w}×${rt.rect.h}`,
+          _ui_track_labels: audio.labels,
+        });
+      }
       // 前端预检：任何一路音源为空都会被后端拒绝（批次全成功或回滚），提前拦截并说明
       const empty = routeCfgs.filter((c) => c.audio.sources.length === 0);
       if (empty.length) {
-        toast('warn', `${empty.map((c) => c._ui_label).join('、')} 没有任何音源：显示器目标请勾选该屏输出端点，或系统音频/麦克风（不静默录制）`);
+        toast('warn', `${empty.map((c) => c._ui_label).join('、')} 没有任何音源：显示器目标请勾选该屏输出端点，或系统音频/麦克风；区域隔离请选择至少一个应用（不静默录制）`);
         state.starting = false;
         renderStartBar();
         return;
@@ -671,6 +835,8 @@ async function startRecording() {
         trackLabels: routeCfgs[i]._ui_track_labels,
       }));
       state.selected.clear();
+      state.regionTarget = null;
+      state.regionRequestId = null;
       toast('ok', `已开始 ${route_ids.length} 路录制`);
     } else {
       const s = state.audioOnly;
@@ -1012,6 +1178,68 @@ function renderShotHistory() {
       </div>`).join('')
     : `<div class="empty">${ICONS.inbox}<br>本次会话还没有截图</div>`;
 }
+
+// M18/REQ-21：主窗先建立监听并确认就绪，再打开 record overlay。
+let regionListenerPromise = null;
+function ensureRegionTargetListener() {
+  if (!regionListenerPromise) {
+    regionListenerPromise = Promise.all([
+      api.listenRegionTarget((payload) => {
+        if (!payload || !payload.rect) return;
+        // M18b：只接受当前 request_id 的事件；stale 不写 state、不 toast。
+        if (!state.regionRequestId || payload.request_id !== state.regionRequestId) {
+          console.debug('[app] 忽略 stale region_target_added:', payload.request_id, '当前:', state.regionRequestId);
+          return;
+        }
+        state.regionTarget = {
+          display: payload.display || { device_name: '', device_path: null },
+          rect: payload.rect,
+          request_id: payload.request_id,
+        };
+        state.regionRequestId = null; // 成功交付：当前请求结束
+        renderConfig();
+        renderStartBar();
+        toast('ok', `区域已就绪：${payload.rect.w} × ${payload.rect.h}`);
+      }),
+      api.listenRegionRecordCancelled((payload) => {
+        if (!payload || payload.request_id !== state.regionRequestId) return;
+        state.regionRequestId = null;
+        state.regionTarget = null;
+        renderConfig();
+        renderStartBar();
+      }),
+    ]).catch((e) => {
+      regionListenerPromise = null;
+      throw e;
+    });
+  }
+  return regionListenerPromise;
+}
+
+function newRegionRequestId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  return `region-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+$('#btn-region-record').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    await ensureRegionTargetListener();
+    // 新一轮框选先清空旧区域目标：Esc 取消后不得残留上一次选区。
+    state.regionTarget = null;
+    const requestId = newRegionRequestId();
+    state.regionRequestId = requestId;
+    renderConfig();
+    renderStartBar();
+    await api.openRegionOverlay('record', requestId);
+  } catch (err) {
+    state.regionRequestId = null;
+    toast('err', `无法打开区域录制覆盖层：${err}`);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // 区域框选（REQ-8）：交互由后端全屏覆盖层窗口完成（label=region-overlay，
 // 加载 ui/region.html，负责选区绘制与 client→物理坐标换算）；此处只打开覆盖层。
@@ -1404,6 +1632,8 @@ async function init() {
   renderShotHistory();
   loadRecovery();
   refreshTargets();
+  // REQ-21 就绪顺序：主窗先建监听（就绪确认）再允许打开 record overlay。
+  ensureRegionTargetListener().catch((e) => console.warn('[app] region_target_added 监听失败：', e));
 
   // 录制模式切换
   $$('#mode-tabs button').forEach((b) => b.addEventListener('click', () => {

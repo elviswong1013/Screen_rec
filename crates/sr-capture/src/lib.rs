@@ -10,4 +10,5 @@
 pub mod canvas;
 pub mod pacer;
 pub mod pipe;
+pub mod region;
 pub mod wgc;

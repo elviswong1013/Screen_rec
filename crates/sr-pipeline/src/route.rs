@@ -31,6 +31,7 @@ use sr_audio::wav::WavWriter;
 use sr_capture::pipe::{
     PipeConnectError, PipeOptions, VideoPipe, AUDIO_PIPE_BUFFER_BYTES, PIPE_WRITE_TIMEOUT,
 };
+use sr_capture::region::{CaptureLossLatch, RegionCrop};
 use sr_capture::wgc::{self, LatestFrame, StreamControl, StreamStartError};
 
 use crate::naming::{format_timestamp, next_available, sanitize_target_name};
@@ -54,12 +55,77 @@ const SIDECAR_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 /// concat 收尾上限（wait_finalized 契约窗口 120s 的分量）。
 const FINALIZE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// 录制目标（§3.4）。`Region` 为后续里程碑形态（M3 未实现，返回 TargetInvalid）。
+/// M18/REQ-22：区域矩形（物理桌面坐标；负坐标合法）。
+///
+/// 输出尺寸在启动时按 `w & !1` / `h & !1` 向下取偶（NV12/编码约束）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegionRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// 向下取偶后的区域矩形（输出尺寸口径；w/h 保持 ≥2）。
+pub fn snap_region_rect(rect: RegionRect) -> RegionRect {
+    RegionRect {
+        x: rect.x,
+        y: rect.y,
+        w: rect.w & !1,
+        h: rect.h & !1,
+    }
+}
+
+/// 桌面矩形 → 显示器帧内裁剪（纯函数；REQ-22 坐标与边界）。
+///
+/// 失败原因：矩形不含于显示器、起点/终点越界、尺寸不足 64×64（吸附后）。
+pub fn region_crop_rect(
+    rect: RegionRect,
+    monitor_x: i32,
+    monitor_y: i32,
+    monitor_w: u32,
+    monitor_h: u32,
+) -> Result<RegionCrop, String> {
+    let snapped = snap_region_rect(rect);
+    if snapped.w < 64 || snapped.h < 64 {
+        return Err(format!(
+            "区域尺寸过小（吸附后 {}x{}，要求 ≥64x64）",
+            snapped.w, snapped.h
+        ));
+    }
+    let end_x_i64 = rect.x as i64 + snapped.w as i64;
+    let end_y_i64 = rect.y as i64 + snapped.h as i64;
+    let monitor_end_x = monitor_x as i64 + monitor_w as i64;
+    let monitor_end_y = monitor_y as i64 + monitor_h as i64;
+    if rect.x < monitor_x
+        || rect.y < monitor_y
+        || end_x_i64 > monitor_end_x
+        || end_y_i64 > monitor_end_y
+    {
+        return Err(format!(
+            "区域越界（rect=({},{}) {}x{}；显示器=({monitor_x},{monitor_y}) {monitor_w}x{monitor_h}）",
+            rect.x, rect.y, snapped.w, snapped.h
+        ));
+    }
+    let start_x = (rect.x - monitor_x) as u32;
+    let start_y = (rect.y - monitor_y) as u32;
+    RegionCrop::new(start_x, start_y, start_x + snapped.w, start_y + snapped.h)
+}
+
+/// 录制目标（§3.4）。`Region` = 单显示器内区域（M18）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RouteTarget {
-    Window { hwnd: u64 },
-    Monitor { index: u32 },
-    Region,
+    Window {
+        hwnd: u64,
+    },
+    Monitor {
+        index: u32,
+    },
+    /// 区域目标：`display_device` = 稳定 device_path，缺失时回退 GDI `szDevice`。
+    Region {
+        display_device: String,
+        rect: RegionRect,
+    },
 }
 
 /// 视频配置（固定画布 D6：启动时固定宽高/fps/像素格式）。
@@ -83,8 +149,10 @@ pub struct RouteConfig {
 /// 其余变体实现自定。
 #[derive(Clone, Debug)]
 pub enum RouteError {
-    /// E_ENCODER_UNAVAILABLE（§9 T1：D4 链全部初始化失败）。
+    /// 编码器链全败 / 不支持实际区域尺寸（M18）。
     EncoderUnavailable,
+    /// M18/REQ-21：编码器不支持实际区域尺寸（不缩放/补边）。
+    RegionSizeUnsupported { width: u32, height: u32 },
     /// E_CONSENT_DENIED（WGC 授权被拒）。
     ConsentDenied,
     /// E_SIDECAR_EXIT（sidecar 非零退出/被终止；保留分段）。
@@ -113,6 +181,10 @@ impl std::fmt::Display for RouteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::EncoderUnavailable => write!(f, "E_ENCODER_UNAVAILABLE: 无可用编码器"),
+            Self::RegionSizeUnsupported { width, height } => write!(
+                f,
+                "E_ENCODER_UNAVAILABLE: 编码器不支持区域尺寸 {width}x{height}（不缩放/补边）"
+            ),
             Self::ConsentDenied => write!(f, "E_CONSENT_DENIED: WGC 授权被拒"),
             Self::SidecarExit { detail } => write!(
                 f,
@@ -155,6 +227,10 @@ struct Shared {
     stop: AtomicBool,
     /// M16/REQ-12：端点失效等路级停止原因（首因生效；进入快照/终态事件）。
     stop_notice: Mutex<Option<StopNotice>>,
+    /// M18/REQ-24：区域生产者失效闩锁（WGC on_closed/尺寸变化；worker 结束后重读）。
+    region_loss: Option<CaptureLossLatch>,
+    /// M18/REQ-24：L2 确定性交错注入——强制 capture_ended（生产永不设置）。
+    capture_ended_for_tests: AtomicBool,
     /// L2 收尾失败分支注入（[`RouteHandle::force_finalize_failure_for_tests`]）。
     force_finalize_failure: AtomicBool,
     /// M17/REQ-17：批量回滚显式取消后台收尾（P1-2：提交门与取消互斥；热路径检查原子标志）。
@@ -252,6 +328,22 @@ impl RouteHandle {
     /// M16/REQ-12：路级停止原因（端点失效；成功/失败分支都可读，早于收尾完成）。
     pub fn stop_notice(&self) -> Option<StopNotice> {
         self.shared.stop_notice()
+    }
+
+    /// M18/REQ-24：L2 确定性交错注入——强制 capture_ended（生产路径不调用）。
+    #[doc(hidden)]
+    pub fn force_capture_ended_for_tests(&self) {
+        self.shared
+            .capture_ended_for_tests
+            .store(true, Ordering::Release);
+    }
+
+    /// M18/REQ-24：L2 注入——区域生产者闩锁首因（模拟 WGC on_closed 的同步写入）。
+    #[doc(hidden)]
+    pub fn latch_region_loss_for_tests(&self, reason: &str) {
+        if let Some(latch) = &self.shared.region_loss {
+            latch.latch(reason);
+        }
     }
 
     /// L2 收尾失败分支注入（`it_route_endpoint_runtime_lost_keeps_others`）：
@@ -629,6 +721,56 @@ pub fn set_start_delay_for_tests(delay: Duration) {
 
 static REMUX_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 static START_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+/// M18/REQ-21：L2 注入——区域尺寸编码器探测结果（0=实际探测，1=强制通过，2=强制失败）。
+static REGION_SIZE_PROBE_OVERRIDE: AtomicU32 = AtomicU32::new(0);
+
+/// M18/REQ-21：L2 确定性注入（`it_region_size_unsupported_rejects`）。
+#[doc(hidden)]
+pub fn set_region_size_probe_override_for_tests(result: Option<bool>) {
+    REGION_SIZE_PROBE_OVERRIDE.store(
+        match result {
+            None => 0,
+            Some(true) => 1,
+            Some(false) => 2,
+        },
+        Ordering::Release,
+    );
+}
+
+fn region_size_probe_override() -> Option<bool> {
+    match REGION_SIZE_PROBE_OVERRIDE.load(Ordering::Acquire) {
+        1 => Some(true),
+        2 => Some(false),
+        _ => None,
+    }
+}
+
+type RegionLatchHook = dyn Fn() + Send + Sync;
+
+fn region_latch_hook_slot() -> &'static Mutex<Option<Arc<RegionLatchHook>>> {
+    static SLOT: std::sync::OnceLock<Mutex<Option<Arc<RegionLatchHook>>>> =
+        std::sync::OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+/// M18/REQ-24：L2 屏障式交错注入——worker 读到闩锁为空后、决定收尾前调用。
+#[doc(hidden)]
+pub fn set_region_latch_hook_for_tests(hook: Option<Arc<dyn Fn() + Send + Sync>>) {
+    *region_latch_hook_slot()
+        .lock()
+        .expect("region latch hook 锁") = hook;
+}
+
+fn run_region_latch_hook() {
+    let hook = region_latch_hook_slot()
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
 
 /// 收尾事务读取的 remux 注入延迟（生产默认 None）。
 pub(crate) fn remux_test_delay() -> Option<Duration> {
@@ -1267,6 +1409,51 @@ fn audio_only_writer(
 enum StreamKind {
     Window(u64),
     Monitor(u32),
+    MonitorRegion {
+        index: u32,
+        crop: RegionCrop,
+        full_width: u32,
+        full_height: u32,
+        loss: CaptureLossLatch,
+    },
+}
+
+/// M18/REQ-24：区域显示器监视（启动身份 + 启动几何 + 失效闩锁）。
+struct RegionWatch {
+    display_device: String,
+    display_name: String,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    loss: CaptureLossLatch,
+}
+
+impl RegionWatch {
+    /// 轮询显示器拓扑/几何（路由线程内执行；无新帧/静止桌面不触发）。
+    fn poll(&self) -> Result<(), String> {
+        let monitors =
+            sr_enum::monitors::list_monitors().map_err(|e| format!("显示器枚举失败：{e}"))?;
+        let found = monitors.into_iter().find(|m| {
+            m.device_path
+                .as_deref()
+                .is_some_and(|p| p.eq_ignore_ascii_case(&self.display_device))
+                || m.gdi_device_name
+                    .as_deref()
+                    .is_some_and(|g| g.eq_ignore_ascii_case(&self.display_device))
+        });
+        let Some(m) = found else {
+            return Err("显示器已移除/失效".to_string());
+        };
+        if m.x != self.x || m.y != self.y || m.width_px != self.width || m.height_px != self.height
+        {
+            return Err(format!(
+                "显示器几何变化（启动 ({},{}) {}x{}；当前 ({},{}) {}x{}）",
+                self.x, self.y, self.width, self.height, m.x, m.y, m.width_px, m.height_px
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// worker 共享上下文。
@@ -1282,6 +1469,8 @@ struct RunCtx {
     finalize_list: PathBuf,
     /// 诊断：窗口目标 HWND（捕获自然结束时确认窗口是否仍存活）。
     target_hwnd: Option<u64>,
+    /// M18/REQ-24：区域显示器监视（路由线程归属，worker 结束时自然停止）。
+    region_watch: Option<RegionWatch>,
 }
 
 /// 单条音频轨：进程环回流 → 管道写线程（写线程独占 stream，任一退出路径先停采集）。
@@ -1441,6 +1630,59 @@ impl Drop for FinalReservation {
     }
 }
 
+/// M18/REQ-22：解析区域目标（稳定 device_path / GDI szDevice → 单显示器 + 帧内 crop）。
+fn resolve_region(
+    display_device: &str,
+    rect: RegionRect,
+) -> Result<(u32, RegionCrop, RegionWatch), RouteError> {
+    let key = display_device.trim();
+    if key.is_empty() {
+        return Err(RouteError::TargetInvalid {
+            detail: "区域目标缺少 display_device（device_path 与 GDI szDevice 均不可得）".into(),
+        });
+    }
+    let monitors = sr_enum::monitors::list_monitors().map_err(|e| RouteError::TargetInvalid {
+        detail: format!("显示器枚举失败：{e}"),
+    })?;
+    let monitor = monitors
+        .into_iter()
+        .find(|m| {
+            m.device_path
+                .as_deref()
+                .is_some_and(|p| p.eq_ignore_ascii_case(key))
+                || m.gdi_device_name
+                    .as_deref()
+                    .is_some_and(|g| g.eq_ignore_ascii_case(key))
+        })
+        .ok_or_else(|| RouteError::TargetInvalid {
+            detail: format!("显示器不存在或已移除（display_device={key}）"),
+        })?;
+    let crop = region_crop_rect(
+        rect,
+        monitor.x,
+        monitor.y,
+        monitor.width_px,
+        monitor.height_px,
+    )
+    .map_err(|detail| RouteError::TargetInvalid { detail })?;
+    let display_name = monitor
+        .friendly_name
+        .clone()
+        .or_else(|| monitor.gdi_device_name.clone())
+        .unwrap_or_else(|| format!("Monitor {}", monitor.index));
+    let loss = CaptureLossLatch::new();
+    let watch = RegionWatch {
+        display_device: key.to_string(),
+        display_name,
+        x: monitor.x,
+        y: monitor.y,
+        width: monitor.width_px,
+        height: monitor.height_px,
+        loss: loss.clone(),
+    };
+    Ok((monitor.index, crop, watch))
+}
+
 /// 启动路由核心（视频 + 可选音频轨；M3/M4 共用编排）。
 fn start_route_impl(
     target: RouteTarget,
@@ -1462,16 +1704,45 @@ fn start_route_impl(
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
-    // ── 目标解析（Region：M3 未实现，显式错误） ──
+    // ── 目标解析（M18：区域 = 单显示器内帧内 crop；窗口/显示器路径不变） ──
+    let mut region_watch: Option<RegionWatch> = None;
     let (stream_kind, target_name) = match &target {
         RouteTarget::Window { hwnd } => (StreamKind::Window(*hwnd), window_title(*hwnd)),
         RouteTarget::Monitor { index } => (StreamKind::Monitor(*index), format!("Monitor {index}")),
-        RouteTarget::Region => {
-            return Err(RouteError::TargetInvalid {
-                detail: "Region 目标路由为后续里程碑形态（M3 未实现）".into(),
-            })
+        RouteTarget::Region {
+            display_device,
+            rect,
+        } => {
+            let (index, crop, watch) = resolve_region(display_device, *rect)?;
+            let (full_width, full_height) = (watch.width, watch.height);
+            let loss = watch.loss.clone();
+            let target_name = format!(
+                "Region {}x{} ({})",
+                crop.width(),
+                crop.height(),
+                watch.display_name
+            );
+            region_watch = Some(watch);
+            (
+                StreamKind::MonitorRegion {
+                    index,
+                    crop,
+                    full_width,
+                    full_height,
+                    loss,
+                },
+                target_name,
+            )
         }
     };
+    let is_region = matches!(stream_kind, StreamKind::MonitorRegion { .. });
+
+    // REQ-23：区域目标必须至少一个音源（命令层矩阵的管线侧兜底；不静默录无声）。
+    if is_region && audio.is_empty() {
+        return Err(RouteError::TargetInvalid {
+            detail: "区域目标没有任何音源（REQ-23：至少选择 1 个应用/系统/麦克风音源）".into(),
+        });
+    }
 
     // ── 音频源解析（M6：App=进程环回 / System=默认端点设备环回 REQ-15 / Mic=采集
     //     设备 REQ-16；全音轨 = 给定来源列表各一条独立轨、互不混音，REQ-17）。 ──
@@ -1496,6 +1767,18 @@ fn start_route_impl(
         }
         None => detect_encoder().ok_or(RouteError::EncoderUnavailable)?,
     };
+    // REQ-21：区域路以真实区域尺寸初始化编码器（探测仍 256×256；不支持 → 失败不缩放/补边）。
+    if let StreamKind::MonitorRegion { crop, .. } = &stream_kind {
+        let supported = region_size_probe_override().unwrap_or_else(|| {
+            crate::sidecar::probe_encoder_size(&encoder, crop.width(), crop.height())
+        });
+        if !supported {
+            return Err(RouteError::RegionSizeUnsupported {
+                width: crop.width(),
+                height: crop.height(),
+            });
+        }
+    }
 
     // ── 音频源身份前置校验（REQ-14/D9：激活前、快速失败） ──
     for (pid, created) in &app_sources {
@@ -1609,9 +1892,13 @@ fn start_route_impl(
         })?);
     }
 
+    let (encoder_width, encoder_height) = match &stream_kind {
+        StreamKind::MonitorRegion { crop, .. } => (crop.width(), crop.height()),
+        _ => (video.canvas_w & !1, video.canvas_h & !1),
+    };
     let video_spec = VideoPipeSpec {
-        width: video.canvas_w & !1,
-        height: video.canvas_h & !1,
+        width: encoder_width,
+        height: encoder_height,
         fps: video.fps,
         pipe_path: pipe.name().to_string(),
     };
@@ -1655,6 +1942,8 @@ fn start_route_impl(
     let shared = Arc::new(Shared {
         stop: AtomicBool::new(false),
         stop_notice: Mutex::new(None),
+        region_loss: region_watch.as_ref().map(|w| w.loss.clone()),
+        capture_ended_for_tests: AtomicBool::new(false),
         force_finalize_failure: AtomicBool::new(false),
         finalize_control: crate::finalize::FinalizeControl::new(),
         container,
@@ -1675,11 +1964,11 @@ fn start_route_impl(
     let latest = LatestFrame::new();
     let target_hwnd = match &stream_kind {
         StreamKind::Window(hwnd) => Some(*hwnd),
-        StreamKind::Monitor(_) => None,
+        StreamKind::Monitor(_) | StreamKind::MonitorRegion { .. } => None,
     };
-    let control = match stream_kind {
+    let control = match &stream_kind {
         StreamKind::Window(hwnd) => wgc::start_window_stream(
-            hwnd,
+            *hwnd,
             video_spec.width,
             video_spec.height,
             video_spec.fps,
@@ -1687,12 +1976,28 @@ fn start_route_impl(
             latest.clone(),
         ),
         StreamKind::Monitor(index) => wgc::start_monitor_stream(
-            index,
+            *index,
             video_spec.width,
             video_spec.height,
             video_spec.fps,
             video.cursor,
             latest.clone(),
+        ),
+        StreamKind::MonitorRegion {
+            index,
+            crop,
+            full_width,
+            full_height,
+            loss,
+        } => wgc::start_region_stream(
+            *index,
+            *full_width,
+            *full_height,
+            *crop,
+            video_spec.fps,
+            video.cursor,
+            latest.clone(),
+            loss.clone(),
         ),
     };
     let control = match control {
@@ -1987,6 +2292,7 @@ fn start_route_impl(
                 final_path,
                 finalize_list: segment_list.with_extension("finalize.ffconcat"),
                 target_hwnd,
+                region_watch,
             });
             let _ = stderr_drainer.join();
             worker_shared.set_result(outcome);
@@ -2072,6 +2378,7 @@ fn record_send_error(shared: &Shared, e: &sr_capture::pipe::PipeWriteError) {
 /// worker 主流程：停止请求 / sidecar 退出 / 捕获自然结束 三路归因，然后收尾。
 fn run_worker(ctx: RunCtx) -> Result<Finalized, RouteError> {
     let mut last_refresh = Instant::now();
+    let mut last_region_poll = Instant::now();
     loop {
         // 1) 停止请求 → 优雅停止（EOF）→ 收尾。
         if ctx.shared.stop.load(Ordering::Acquire) {
@@ -2094,7 +2401,28 @@ fn run_worker(ctx: RunCtx) -> Result<Finalized, RouteError> {
             return Err(sidecar_exit(&ctx, code));
         }
         // 3) 捕获自然结束（目标关闭/写错误直停）→ 按目标丢失语义优雅收尾（保留分段）。
-        if capture_ended(&ctx.control) {
+        //
+        // M18/REQ-24 闩锁顺序：先让生产者有机会在 capture_ended 之前同步写首因；
+        // worker 在判定 ended 后**重读**闩锁，消除「检查为空 → 事件入队 → 结束」竞态。
+        if let Some(watch) = &ctx.region_watch {
+            if !watch.loss.is_set() {
+                run_region_latch_hook();
+            }
+        }
+        if capture_ended(&ctx.shared, &ctx.control) {
+            let notice = ctx.region_watch.as_ref().and_then(|watch| {
+                watch
+                    .loss
+                    .get()
+                    .map(|reason| (watch.display_name.clone(), reason))
+            });
+            if let Some((endpoint, detail)) = notice {
+                ctx.shared.set_stop_notice(StopNotice {
+                    code: "E_TARGET_LOST".to_string(),
+                    endpoint: Some(endpoint),
+                    detail,
+                });
+            }
             if sr_audio::wasapi::diag_enabled() {
                 let window_alive = ctx.target_hwnd.map(|h| unsafe {
                     windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(
@@ -2108,7 +2436,26 @@ fn run_worker(ctx: RunCtx) -> Result<Finalized, RouteError> {
             }
             return graceful_stop(ctx);
         }
-        // 4) 清单新鲜度刷新（节流 ~1s；best-effort——写失败注入期间静默跳过）。
+        // 4) 区域显示器拓扑/几何轮询（路由线程归属；无新帧/静止桌面不判失效）。
+        if let Some(watch) = &ctx.region_watch {
+            if last_region_poll.elapsed() >= Duration::from_secs(1) {
+                if let Err(reason) = watch.poll() {
+                    // 枚举失败是查询面噪声，不得误判目标失效；仅真实移除/几何变化停路。
+                    if reason.contains("显示器已移除") || reason.contains("显示器几何变化")
+                    {
+                        ctx.shared.set_stop_notice(StopNotice {
+                            code: "E_TARGET_LOST".to_string(),
+                            endpoint: Some(watch.display_name.clone()),
+                            detail: reason,
+                        });
+                    } else {
+                        eprintln!("[route] 区域显示器轮询失败（继续录制）：{reason}");
+                    }
+                }
+                last_region_poll = Instant::now();
+            }
+        }
+        // 5) 清单新鲜度刷新（节流 ~1s；best-effort——写失败注入期间静默跳过）。
         if last_refresh.elapsed() >= Duration::from_secs(1) {
             refresh_manifest_segments(&ctx.shared);
             last_refresh = Instant::now();
@@ -2145,7 +2492,10 @@ fn graceful_stop(ctx: RunCtx) -> Result<Finalized, RouteError> {
     }
 }
 
-fn capture_ended(control: &Mutex<Option<StreamControl>>) -> bool {
+fn capture_ended(shared: &Shared, control: &Mutex<Option<StreamControl>>) -> bool {
+    if shared.capture_ended_for_tests.load(Ordering::Acquire) {
+        return true;
+    }
     let guard = control.lock().expect("capture control 锁");
     match guard.as_ref() {
         Some(c) => c.is_finished(),

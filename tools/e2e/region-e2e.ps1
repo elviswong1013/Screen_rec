@@ -20,7 +20,7 @@
 param(
   [string] $AppExe = '',
   [string] $EvidenceDir = '',
-  [ValidateSet('all', 'draw', 'esc', 'failure')] [string] $Scenario = 'all',
+  [ValidateSet('all', 'draw', 'esc', 'failure', 'record')] [string] $Scenario = 'all',
   [int[]] $DragRect = @(600, 300, 900, 600), # x, y, w, h（物理像素；宽高按 3 的倍数便于 150% 下 CSS 整数）
   [switch] $KeepAppRunning
 )
@@ -164,9 +164,83 @@ function Test-ErrorHintVisible {
   } finally { $bmp.Dispose() }
 }
 
+function Get-MediaFiles {
+  param([string] $Dir)
+  if (-not (Test-Path $Dir)) { return @() }
+  @(Get-ChildItem $Dir -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in '.mkv', '.mp4' } |
+    Select-Object -ExpandProperty FullName)
+}
+
+function Wait-NewMediaFile {
+  param([string] $Dir, [string[]] $Before, [int] $TimeoutSec = 40)
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
+  while ([DateTime]::UtcNow -lt $deadline) {
+    $new = @(Get-MediaFiles -Dir $Dir | Where-Object { $Before -notcontains $_ })
+    if ($new.Count -gt 0) { return $new[0] }
+    Start-Sleep -Milliseconds 300
+  }
+  return $null
+}
+
+function Get-BandMeanDb {
+  param([string] $Ffmpeg, [string] $File, [int] $Hz)
+  $ffArgs = @('-hide_banner', '-nostdin', '-i', $File, '-vn', '-af', "bandpass=f=${Hz}:width_type=h:w=20,volumedetect", '-f', 'null', '-')
+  $argLine = ($ffArgs | ForEach-Object {
+      if ($_ -match '\s') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
+    }) -join ' '
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $Ffmpeg
+  $psi.Arguments = $argLine
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardError = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.CreateNoWindow = $true
+  $p = [System.Diagnostics.Process]::Start($psi)
+  $err = $p.StandardError.ReadToEnd()
+  [void]$p.StandardOutput.ReadToEnd()
+  $p.WaitForExit()
+  $m = [regex]::Match($err, 'mean_volume:\s*(-?[0-9.]+)\s*dB')
+  if (-not $m.Success) { return [double]::NegativeInfinity }
+  return [double]$m.Groups[1].Value
+}
+
+function Get-GoertzelDb {
+  <# 单频点 DFT（Goertzel，等价 FFT 的一个 bin）：真实成品音轨内容判据。 #>
+  param(
+    [Parameter(Mandatory)] [string] $Ffmpeg,
+    [Parameter(Mandatory)] [string] $File,
+    [Parameter(Mandatory)] [int] $Hz,
+    [int] $Rate = 48000
+  )
+  $tmp = Join-Path $work ("goertzel-" + [Guid]::NewGuid().ToString('N') + ".f32")
+  try {
+    & $Ffmpeg -v error -i $File -vn -map 0:a:0 -f f32le -ac 1 -ar $Rate -y $tmp
+    if (-not (Test-Path $tmp)) { return [double]::NegativeInfinity }
+    $bytes = [System.IO.File]::ReadAllBytes($tmp)
+    $n = [int][Math]::Floor($bytes.Length / 4)
+    if ($n -lt ($Rate / 2)) { return [double]::NegativeInfinity }
+    $use = [Math]::Min($n, $Rate * 5)
+    $start = [int](($n - $use) / 2)
+    $coeff = 2.0 * [Math]::Cos(2.0 * [Math]::PI * $Hz / $Rate)
+    $s1 = 0.0; $s2 = 0.0
+    for ($i = 0; $i -lt $use; $i++) {
+      $s = [BitConverter]::ToSingle($bytes, ($start + $i) * 4) + $coeff * $s1 - $s2
+      $s2 = $s1; $s1 = $s
+    }
+    $p = $s1 * $s1 + $s2 * $s2 - $coeff * $s1 * $s2
+    return 10.0 * [Math]::Log10([Math]::Max($p / $use, 1e-20))
+  } finally {
+    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+  }
+}
+
 $script:settingsBackup = Join-Path $work 'settings.backup.json'
 $targetProcess = $null
 $appProcess = $null
+$toneProcess = $null
+$tone660Process = $null
+$tone880Process = $null
 $summaryPath = Join-Path $EvidenceDir 'summary.md'
 
 try {
@@ -286,6 +360,207 @@ try {
     }
   }
 
+  # ── d) 区域录制（REQ-21/22/23 贯通：真实拖拽 → 开录 → 成品尺寸/无覆盖层/轨数/音调） ──
+  if ($Scenario -eq 'record') {
+    $recX = $dragX + 240
+    $recY = $dragY + 380
+    $recW = 400
+    $recH = 120
+    $targetProcess = Start-TargetWindow -X $dragX -Y $dragY -W $dragW -H $dragH
+    Write-Host "录制目标窗口物理矩形: $((Get-Content "$targetStop.rect" -Raw).Trim())"
+
+    # 区域默认全音轨（系统正例）；隔离双应用子场景稍后用真实 UI 切到「隔离」。
+    if (Test-Path $cfgPath) {
+      $settings = Get-Content $cfgPath -Raw | ConvertFrom-Json
+      $settings | Add-Member -NotePropertyName default_audio_mode -NotePropertyValue 'all_tracks' -Force
+      $settings | Add-Member -NotePropertyName output_container -NotePropertyValue 'mkv' -Force
+      $settings | Add-Member -NotePropertyName audio_sample_rate -NotePropertyValue 48000 -Force
+      [System.IO.File]::WriteAllText($cfgPath, ($settings | ConvertTo-Json -Depth 6), [System.Text.UTF8Encoding]::new($false))
+    }
+
+    $ffmpeg = Join-Path $repoRoot 'tools\ffmpeg\ffmpeg-n8.1-latest-win64-lgpl-8.1\bin\ffmpeg.exe'
+    $ffprobe = Join-Path $repoRoot 'tools\ffmpeg\ffmpeg-n8.1-latest-win64-lgpl-8.1\bin\ffprobe.exe'
+    $ffplay = Join-Path $repoRoot 'tools\ffmpeg\ffmpeg-n8.1-latest-win64-lgpl-8.1\bin\ffplay.exe'
+    $toneWav660 = Join-Path $work 'tone-660.wav'
+    $toneWav880 = Join-Path $work 'tone-880.wav'
+    & $ffmpeg -y -hide_banner -loglevel error -f lavfi -i 'sine=frequency=660:sample_rate=48000:duration=30,volume=0.25' -ac 2 -c:a pcm_f32le $toneWav660
+    & $ffmpeg -y -hide_banner -loglevel error -f lavfi -i 'sine=frequency=880:sample_rate=48000:duration=30,volume=0.25' -ac 2 -c:a pcm_f32le $toneWav880
+
+    # 660 应用必须在 app 启动前播放：UI 音频源快照（进程 PID）才能列出它。
+    Get-Process screen-rec -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Milliseconds 900
+    $tone660Process = Start-Process -FilePath $ffplay -ArgumentList @('-nodisp', '-loop', '0', '-loglevel', 'quiet', $toneWav660) -PassThru
+    Start-Sleep -Milliseconds 900
+    $appOut = Join-Path $work 'app-stdout.log'
+    $appErr = Join-Path $work 'app-stderr.log'
+    $appProcess = Start-Process -FilePath $AppExe -PassThru -RedirectStandardOutput $appOut -RedirectStandardError $appErr
+    Start-Sleep -Seconds 6
+    $appWin = Find-AppWindow -ProcessId $appProcess.Id
+    Move-Window -Handle $appWin.Handle -X ($dragX + $dragW + 40) -Y $dragY
+    # 顶部置顶：避免用户桌面其它窗口覆盖主窗后拦截后续真实点击。
+    [void][SrE2E.Native]::SetWindowPos($appWin.Handle, [IntPtr](-1), ($dragX + $dragW + 40), $dragY, 0, 0, 0x0001 -bor 0x0004 -bor 0x0010)
+
+    $open = Open-RegionRecordFromUi -ProcessId $appProcess.Id -WorkDir 'm18r' -TolerancePx 6
+    Start-Sleep -Milliseconds 1200
+    Add-Result -Name 'd0. 区域录制覆盖层已打开' -Pass ($null -ne $open.Overlay) -Detail "overlay=$($open.Overlay.Rect.Width)x$($open.Overlay.Rect.Height)"
+
+    $outDir = Get-OutputDir
+    $beforeMedia = @(Get-MediaFiles -Dir $outDir)
+    Send-Drag -X1 $recX -Y1 $recY -X2 ($recX + $recW) -Y2 ($recY + $recH) -Steps 14 -StepDelayMs 30 -TolerancePx 6
+    $closed = Wait-OverlayGone -TimeoutMs 8000
+    Add-Result -Name 'd1. 确认后覆盖层隐藏（DWM 合成窗口 ≥150ms）' -Pass $closed -Detail "gone=$closed"
+    Start-Sleep -Milliseconds 1200
+    $confirmed = Get-UiRegionSize -ProcessId $appProcess.Id
+    Add-Result -Name 'd1b. 覆盖层确认的最终尺寸可读（精确校验基准）' -Pass ($null -ne $confirmed) `
+      -Detail $(if ($confirmed) { "$($confirmed.Width)x$($confirmed.Height)" } else { '未读到区域尺寸文本' })
+
+    # 启动（开始按钮为底部红色 .btn-rec；「全部停止」用 UIA 检测，避免页面滚动影响）。
+    $started = $false
+    for ($attempt = 1; $attempt -le 2 -and -not $started; $attempt++) {
+      [void](Set-ForegroundWindow -Handle $open.AppWindow.Handle)
+      [void](Set-UiScrollTop -ProcessId $appProcess.Id)
+      Start-Sleep -Milliseconds 250
+      $shot = Join-Path $work "record-main-$attempt.png"
+      Save-ScreenBitmap -Path $shot -X $open.Client.X -Y $open.Client.Y -Width $open.Client.Width -Height $open.Client.Height | Out-Null
+      $startBtn = Find-RedButton -ScreenshotPath $shot -MinY ([int]($open.Client.Height - 220))
+      if (-not $startBtn) { continue }
+      Write-Host "开始按钮坐标: $($open.Client.X + $startBtn.X),$($open.Client.Y + $startBtn.Y)"
+      Send-Click -X ($open.Client.X + $startBtn.X) -Y ($open.Client.Y + $startBtn.Y) -TolerancePx 6
+      Start-Sleep -Seconds 2
+      $stopEl = Wait-UiButtonByName -ProcessId $appProcess.Id -Name '全部停止' -TimeoutMs 8000
+      if ($stopEl) { $started = $true }
+    }
+    Add-Result -Name 'd2. 录制已启动（UIA 可见「全部停止」）' -Pass $started -Detail "started=$started"
+    if ($started) {
+      Start-Sleep -Seconds 7
+      $stopInvoked = Invoke-UiButtonByName -ProcessId $appProcess.Id -Name '全部停止'
+      if (-not $stopInvoked) {
+        [void](Set-UiScrollTop -ProcessId $appProcess.Id)
+        Start-Sleep -Milliseconds 250
+        $shot3 = Join-Path $work 'record-stop.png'
+        Save-ScreenBitmap -Path $shot3 -X $open.Client.X -Y $open.Client.Y -Width $open.Client.Width -Height $open.Client.Height | Out-Null
+        $stopBtn = Find-RedButton -ScreenshotPath $shot3 -MaxY ([int]($open.Client.Height - 250))
+        if ($stopBtn) { Send-Click -X ($open.Client.X + $stopBtn.X) -Y ($open.Client.Y + $stopBtn.Y) -TolerancePx 6 }
+      }
+      $final = Wait-NewMediaFile -Dir $outDir -Before $beforeMedia -TimeoutSec 45
+      Add-Result -Name 'd3. 停止后产出成品' -Pass ($null -ne $final) -Detail "final=$final"
+    } else {
+      $final = $null
+      Add-Result -Name 'd3. 停止后产出成品' -Pass $false -Detail '录制未启动'
+    }
+    if ($final) {
+      $copy = Join-Path $EvidenceDir 'region-record.mkv'
+      Copy-Item $final $copy -Force
+      $dur = [double](& $ffprobe -v error -show_entries format=duration -of csv=p=0 $final)
+      $fmt = (& $ffprobe -v error -show_entries format=format_name -of csv=p=0 $final) -join ''
+      $vw = [int](& $ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 $final)
+      $vh = [int](& $ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 $final)
+      $aCount = @(& $ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $final | Where-Object { $_ -ne '' }).Count
+      $sizeOk = ($null -ne $confirmed -and $vw -eq $confirmed.Width -and $vh -eq $confirmed.Height)
+      Add-Result -Name 'd4. 成品尺寸 = 覆盖层确认的最终尺寸（精确）' -Pass $sizeOk `
+        -Detail "${vw}x${vh}（确认 $($confirmed.Width)x$($confirmed.Height)；非整屏）"
+      Add-Result -Name 'd5. MKV 容器 + 时长覆盖录制段（含 UIA 启动等待）' -Pass ($fmt -match 'matroska' -and $dur -ge 6.0 -and $dur -le 25.0) -Detail "format=$fmt dur=$([math]::Round($dur,2))s"
+      Add-Result -Name 'd6. 全音轨（默认系统）恰 1 轨' -Pass ($aCount -eq 1) -Detail "audioTracks=$aCount"
+
+      # 帧无覆盖层：真正解码第一帧 + 5s 后续帧；遮罩 alpha=0.55 会把绿色压暗（<170）。
+      $frame1 = Join-Path $EvidenceDir 'record-first-frame.png'
+      $frame2 = Join-Path $EvidenceDir 'record-frame-5s.png'
+      & $ffmpeg -y -hide_banner -loglevel error -i $final -frames:v 1 $frame1
+      & $ffmpeg -y -hide_banner -loglevel error -ss 5 -i $final -frames:v 1 $frame2
+      Add-Type -AssemblyName System.Drawing
+      $frameOk = $true
+      $samples = @()
+      foreach ($fp in @($frame1, $frame2)) {
+        $bmp = [System.Drawing.Bitmap]::FromFile($fp)
+        try {
+          foreach ($pt in @(@([int]($bmp.Width/2), [int]($bmp.Height/2)), @([int]($bmp.Width/4), [int]($bmp.Height/4)))) {
+            $c = $bmp.GetPixel($pt[0], $pt[1])
+            $samples += "RGB($($c.R),$($c.G),$($c.B))"
+            if (-not ($c.G -ge 170 -and $c.R -le 70 -and $c.B -le 70)) { $frameOk = $false }
+          }
+        } finally { $bmp.Dispose() }
+      }
+      Add-Result -Name 'd7. 真正第一帧与后续帧无覆盖层（纯绿目标未被遮罩压暗）' -Pass $frameOk -Detail ($samples -join ' ') -Evidence $frame1
+
+      # 系统正例：只断言 660 存在；880 未播放，不再冒充负例。
+      $db660 = Get-BandMeanDb -Ffmpeg $ffmpeg -File $final -Hz 660
+      $db880Ref = Get-BandMeanDb -Ffmpeg $ffmpeg -File $final -Hz 880
+      Add-Result -Name 'd8. 系统音轨含 660Hz 正例' -Pass ($db660 -gt -55) `
+        -Detail "660Hz=$([math]::Round($db660,1))dB；880Hz=$([math]::Round($db880Ref,1))dB（未播放，仅参考，不作负例）"
+
+      # ── d9+: 真实隔离双应用（660 应用被 UI 勾选；880 为另一应用进程，不勾选） ──
+      $isolatedSelected = Select-UiRadioByPrefix -ProcessId $appProcess.Id -NamePrefix '隔离'
+      Add-Result -Name 'd9. 真实 UI 切到「隔离」音轨模式' -Pass $isolatedSelected -Detail "selected=$isolatedSelected"
+      if ($isolatedSelected) {
+        $open2 = Open-RegionRecordFromUi -ProcessId $appProcess.Id -WorkDir 'm18r-iso' -TolerancePx 6
+        Start-Sleep -Milliseconds 1200
+        $confirmed2 = $null
+        if ($open2.Overlay) {
+          Send-Drag -X1 $recX -Y1 $recY -X2 ($recX + $recW) -Y2 ($recY + $recH) -Steps 14 -StepDelayMs 30 -TolerancePx 6
+          $closed2 = Wait-OverlayGone -TimeoutMs 8000
+          Add-Result -Name 'd9b. 隔离场景覆盖层确认/隐藏' -Pass $closed2 -Detail "gone=$closed2"
+          Start-Sleep -Milliseconds 1200
+          $confirmed2 = Get-UiRegionSize -ProcessId $appProcess.Id
+        }
+        $checkboxId = "cfg-region-app-$($tone660Process.Id)"
+        $toggleOk = Invoke-UiToggle -ProcessId $appProcess.Id -AutomationId $checkboxId
+        Add-Result -Name 'd10. UI 勾选 660 应用（UIA AutomationId = PID）' -Pass $toggleOk -Detail $checkboxId
+        if ($toggleOk -and $open2.Overlay) {
+          # 另一独立应用进程（880）在选中 660 之后开始播放，且不被勾选。
+          $tone880Process = Start-Process -FilePath $ffplay -ArgumentList @('-nodisp', '-loop', '0', '-loglevel', 'quiet', $toneWav880) -PassThru
+          Start-Sleep -Milliseconds 900
+          $beforeMedia2 = @(Get-MediaFiles -Dir $outDir)
+          $started2 = $false
+          for ($attempt = 1; $attempt -le 2 -and -not $started2; $attempt++) {
+            [void](Set-ForegroundWindow -Handle $open2.AppWindow.Handle)
+            [void](Set-UiScrollTop -ProcessId $appProcess.Id)
+            Start-Sleep -Milliseconds 250
+            $shotIso = Join-Path $work "record-iso-main-$attempt.png"
+            Save-ScreenBitmap -Path $shotIso -X $open2.Client.X -Y $open2.Client.Y -Width $open2.Client.Width -Height $open2.Client.Height | Out-Null
+            $startBtn2 = Find-RedButton -ScreenshotPath $shotIso -MinY ([int]($open2.Client.Height - 220))
+            if (-not $startBtn2) { continue }
+            Send-Click -X ($open2.Client.X + $startBtn2.X) -Y ($open2.Client.Y + $startBtn2.Y) -TolerancePx 6
+            Start-Sleep -Seconds 2
+            $stopEl2 = Wait-UiButtonByName -ProcessId $appProcess.Id -Name '全部停止' -TimeoutMs 8000
+            if ($stopEl2) { $started2 = $true }
+          }
+          Add-Result -Name 'd11. 隔离场景录制已启动（UIA 可见「全部停止」）' -Pass $started2 -Detail "started=$started2"
+          if ($started2) {
+            Start-Sleep -Seconds 7
+            $stopInvoked = Invoke-UiButtonByName -ProcessId $appProcess.Id -Name '全部停止'
+            if (-not $stopInvoked) {
+              [void](Set-UiScrollTop -ProcessId $appProcess.Id)
+              Start-Sleep -Milliseconds 250
+              $shotIso3 = Join-Path $work 'record-iso-stop.png'
+              Save-ScreenBitmap -Path $shotIso3 -X $open2.Client.X -Y $open2.Client.Y -Width $open2.Client.Width -Height $open2.Client.Height | Out-Null
+              $stopBtn2 = Find-RedButton -ScreenshotPath $shotIso3 -MaxY ([int]($open2.Client.Height - 250))
+              if ($stopBtn2) { Send-Click -X ($open2.Client.X + $stopBtn2.X) -Y ($open2.Client.Y + $stopBtn2.Y) -TolerancePx 6 }
+            }
+            $final2 = Wait-NewMediaFile -Dir $outDir -Before $beforeMedia2 -TimeoutSec 45
+          if ($tone880Process -and -not $tone880Process.HasExited) { $tone880Process.Kill() }
+          Add-Result -Name 'd12. 隔离场景停止后产出成品' -Pass ($null -ne $final2) -Detail "final=$final2"
+          if ($final2) {
+            $copy2 = Join-Path $EvidenceDir 'region-record-isolated.mkv'
+            Copy-Item $final2 $copy2 -Force
+            $aCount2 = @(& $ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $final2 | Where-Object { $_ -ne '' }).Count
+            $vw2 = [int](& $ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 $final2)
+            $vh2 = [int](& $ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 $final2)
+            Add-Result -Name 'd13. 隔离成品恰 1 条应用音轨（无系统混音）' -Pass ($aCount2 -eq 1) -Detail "audioTracks=$aCount2"
+            $sizeOk2 = ($null -ne $confirmed2 -and $vw2 -eq $confirmed2.Width -and $vh2 -eq $confirmed2.Height)
+            Add-Result -Name 'd14. 隔离成品尺寸 = 确认矩形（精确）' -Pass $sizeOk2 `
+              -Detail "${vw2}x${vh2}（确认 $($confirmed2.Width)x$($confirmed2.Height)）"
+            $g660 = Get-GoertzelDb -Ffmpeg $ffmpeg -File $final2 -Hz 660
+            $g880 = Get-GoertzelDb -Ffmpeg $ffmpeg -File $final2 -Hz 880
+            $isoOk = ($g660 -gt -60) -and (($g660 - $g880) -ge 15)
+            Add-Result -Name 'd15. 隔离音轨 FFT 单频点：660 存在、未选 880 至少低 15dB' -Pass $isoOk `
+              -Detail "660Hz=$([math]::Round($g660,1))dB 880Hz=$([math]::Round($g880,1))dB diff=$([math]::Round($g660-$g880,1))dB（Goertzel DFT bin）" -Evidence $copy2
+          }
+        }
+      }
+    }
+  }
+  }
+
   # ── 汇总 ────────────────────────────────────────────────────────────────
   $failed = @($results | Where-Object { $_.Result -eq 'FAIL' })
   $lines = @(
@@ -311,6 +586,9 @@ try {
 }
 finally {
   Restore-Settings
+  if ($toneProcess -and -not $toneProcess.HasExited) { $toneProcess.Kill() }
+  if ($tone660Process -and -not $tone660Process.HasExited) { $tone660Process.Kill() }
+  if ($tone880Process -and -not $tone880Process.HasExited) { $tone880Process.Kill() }
   if ($targetProcess) { Stop-TargetWindow -Process $targetProcess }
   if (-not $KeepAppRunning) {
     Get-Process screen-rec -ErrorAction SilentlyContinue | Stop-Process -Force

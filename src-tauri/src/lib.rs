@@ -125,6 +125,8 @@ pub fn run() {
             app.manage(SettingsState(Mutex::new(initial)));
             // §3.3 命令层运行时状态（ChannelHub 快照 + 活动路由表 + 恢复扫描缓存）。
             app.manage(commands::CommandsState::new());
+            // M18/REQ-21：区域覆盖层上下文/代次（record 确认一次性交付）。
+            app.manage(region::RegionOverlayState::default());
 
             // 托盘：占位图标（icons/icon.ico）+ 菜单（显示/开始/停止/退出）。
             // P2：开始/停止复用命令层语义（最近一次成功配置 = 托盘「开始」的目标；
@@ -200,6 +202,10 @@ pub fn run() {
             region::get_overlay_geometry,
             region::open_region_overlay,
             region::close_region_overlay,
+            // M18/REQ-21：区域录制上下文 / 确认（region_target_added）/ 取消
+            region::get_region_context,
+            region::confirm_region_record,
+            region::cancel_region_record,
             // P1-A 区域截图（后端主导：隐藏覆盖层 → 等合成 → 截图 → 关闭）
             region::take_region_screenshot,
             // REQ-31 Channel 订阅（返回当前状态快照）

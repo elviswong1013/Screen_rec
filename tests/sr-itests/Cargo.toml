@@ -14,6 +14,8 @@ sr-enum = { path = "../../crates/sr-enum" }
 sr-shot = { path = "../../crates/sr-shot" }
 # M3 红测试的接口契约目标（单路视频管线，REQ-9..21 部分；规格 §3.2/§3.3）
 sr-pipeline = { path = "../../crates/sr-pipeline" }
+# M18/REQ-22：区域裁剪/失效闩锁断言（RegionCrop 等）
+sr-capture = { path = "../../crates/sr-capture" }
 # M4 红测试的接口契约目标（音频隔离，REQ-14/17/18/26；规格 §3.2）
 sr-audio = { path = "../../crates/sr-audio" }
 # M7 红测试的接口契约目标（合并，REQ-23；规格 §3.2 模块表：sr-merge=合并（异构多轨））
@@ -36,5 +38,6 @@ windows = { version = "0.62", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
+    "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
 ] }

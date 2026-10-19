@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Screen_rec 最小 ACL：区域录制主窗需监听 region_target_added（Tauri 2.12.4 默认拒绝事件 listen）。",
+  "windows": ["main", "region-overlay"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

@@ -118,7 +118,7 @@ impl CanvasConverter {
 }
 
 /// BGRA → NV12（BT.601 limited；2×2 均值色度；S1/S1b 实测同款实现）。
-fn bgra_to_nv12(bgra: &[u8], w: u32, h: u32, nv12: &mut [u8]) {
+pub(crate) fn bgra_to_nv12(bgra: &[u8], w: u32, h: u32, nv12: &mut [u8]) {
     let (w, h) = (w as usize, h as usize);
     debug_assert_eq!(nv12.len(), w * h * 3 / 2);
     let (y_plane, uv_plane) = nv12.split_at_mut(w * h);
