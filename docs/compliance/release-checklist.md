@@ -47,7 +47,7 @@
 
 - [ ] **G2-01 持续录制指示**：托盘图标/标题随录制状态变化，或提供置顶小浮窗/任务栏徽标；关闭主窗后仍可见。当前托盘 tooltip 固定、主窗关闭后仅系统捕获边框（可被用户关闭）。证据：[privacy-policy-draft.md](privacy-policy-draft.md)、[lib.rs](../../src-tauri/src/lib.rs)；`[待生成：设计/实现]`。owner：`[待填：产品/前端]`。
 - [ ] **G2-02 开始前目标/音源摘要与第三方提示**：开始前显示将录制的窗口/显示器/区域、系统/应用/麦克风音频，并提示“请确认已告知参与者”。当前开始按钮即用户操作，无单独隐私确认。证据：`ui/` 流程；`[待生成：设计]`。owner：`[待填：产品/前端]`。
-- [ ] **G2-03 文件名/manifest 脱敏**：默认成品名不使用窗口标题；manifest 的 `identity.name` 改为通用标签/哈希；如保留标题，提供关闭开关并在隐私政策披露。当前窗口标题可能进入文件名与 manifest。证据：[privacy-policy-draft.md](privacy-policy-draft.md)、[m14-report.md](../milestones/m14-report.md)。owner：`[待填：工程/产品]`。
+- [~] **G2-03 文件名/manifest 脱敏**：默认 false（`Window {seq}`）已实现；manifest `identity.name` 与恢复成品名同步；设置开关 `include_window_title_in_filename` 可回退旧行为；旧 API true 兼容。**尚缺**旧会话 UI 标题显示脱敏、安装包重建。证据：[m19a-privacy-redaction.md](../milestones/m19a-privacy-redaction.md)、[privacy-policy-draft.md](privacy-policy-draft.md)。owner：`[待填：工程/产品]`。
 - [ ] **G2-04 日志脱敏**：错误串只保留 basename/哈希/`<redacted>`；避免完整路径、窗口标题、用户名。当前 stderr 可能含路径/标题。证据：[privacy-policy-draft.md](privacy-policy-draft.md)。owner：`[待填：工程]`。
 - [ ] **G2-05 保留/清理入口**：设置页显示 `.screenrec_tmp` 占用/未完成会话；提供一键清理；明确 `keep_segments` 是调试选项；失败/崩溃残留有提示。证据：`[待生成：设计/实现]`。owner：`[待填：产品/工程]`。
 - [~] **G2-06 卸载数据提示**：卸载器已有“删除应用数据”可选复选框，且不删除输出目录；**尚缺**应用内/文档明确说明静默卸载默认保留设置、成品永不自动删除、WebView2 数据不清理。证据：[ffmpeg-lgpl-package-report.md](../milestones/ffmpeg-lgpl-package-report.md)、[privacy-policy-draft.md](privacy-policy-draft.md)。owner：`[待填：产品/安装器]`。

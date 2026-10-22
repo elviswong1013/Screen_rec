@@ -49,6 +49,18 @@ pub fn sanitize_target_name(raw: &str) -> String {
     s
 }
 
+/// M19a 隐私命名：窗口目标的输出名。
+///
+/// `include_window_title == false`（设置默认）→ `Window {seq}`（不含窗口标题）；
+/// `true` → 原样返回标题（后续仍由 [`sanitize_target_name`] 处理）。
+pub fn output_target_name(window_title: &str, seq: u64, include_window_title: bool) -> String {
+    if include_window_title {
+        window_title.to_string()
+    } else {
+        format!("Window {seq}")
+    }
+}
+
 /// UNIX 毫秒时间戳（显式 UTC 偏移，分钟）→ `yyyyMMdd_HHmmss`（15 字符）。
 pub fn format_timestamp(unix_ms: u64, utc_offset_minutes: i32) -> String {
     // 秒级换算（i64 中间量；偏移可负，跨日回退由 civil 算法处理）。

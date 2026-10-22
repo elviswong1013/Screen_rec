@@ -140,6 +140,10 @@ pub struct Settings {
     /// `<output_dir>/.screenrec_tmp/<session_id>`；旧配置缺字段按 false 兼容。
     #[serde(default)]
     pub keep_segments: bool,
+    /// M19a 隐私：文件名/manifest 是否包含窗口标题。默认 false = 通用名
+    /// `Window {seq}`；旧配置缺字段按 false 兼容，坏类型只降级本字段。
+    #[serde(default, deserialize_with = "deserialize_lenient_bool")]
+    pub include_window_title_in_filename: bool,
 }
 
 fn default_output_dir() -> String {
@@ -329,6 +333,16 @@ fn default_cursor() -> bool {
     true
 }
 
+/// M19a：字段级容错布尔——只接受 JSON bool；字符串/数字/null/对象/数组等坏类型
+/// 只把本字段降级为 false，不影响同一份设置中的其它字段。
+fn deserialize_lenient_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_bool().unwrap_or(false))
+}
+
 fn default_segment_secs() -> u32 {
     5
 }
@@ -346,6 +360,7 @@ impl Default for Settings {
             encoder: EncoderSetting::default(),
             segment_secs: default_segment_secs(),
             keep_segments: false,
+            include_window_title_in_filename: false,
         }
     }
 }
@@ -457,6 +472,7 @@ mod tests {
             encoder: EncoderSetting::Named("h264_mf".to_string()),
             segment_secs: 10,
             keep_segments: true,
+            include_window_title_in_filename: true,
             audio_sample_rate: 88_200,
             output_container: sr_pipeline::naming::OutputContainer::Mp4,
         };
@@ -742,6 +758,93 @@ mod tests {
             assert_eq!(s.output_dir, r"D:\kept", "REQ-16：{label} 不得重置其余字段");
             assert_eq!(s.fps, 60, "REQ-16：{label} 不得重置其余字段");
         }
+    }
+
+    // ─────────────────── M19a：include_window_title_in_filename（默认 false / 容错） ───────────────────
+
+    #[test]
+    fn unit_settings_include_window_title_default_false_and_round_trip() {
+        assert!(
+            !Settings::default().include_window_title_in_filename,
+            "M19a：默认不得把窗口标题写入文件名"
+        );
+        let mut s = Settings::default();
+        s.include_window_title_in_filename = true;
+        let json = serde_json::to_string(&s).expect("serialize");
+        let back: Settings = serde_json::from_str(&json).expect("deserialize");
+        assert!(
+            back.include_window_title_in_filename,
+            "M19a：true 应可往返持久化"
+        );
+    }
+
+    #[test]
+    fn unit_settings_include_window_title_missing_field_false_keeps_others() {
+        let json = r#"{"output_dir":"E:\\out","fps":60}"#;
+        let s: Settings = serde_json::from_str(json).expect("缺字段应可解析");
+        assert!(
+            !s.include_window_title_in_filename,
+            "M19a：旧配置缺字段 → false"
+        );
+        assert_eq!(s.output_dir, r"E:\out", "其余字段不得被重置");
+        assert_eq!(s.fps, 60, "其余字段不得被重置");
+    }
+
+    #[test]
+    fn unit_settings_include_window_title_bad_types_degrade_field_only() {
+        // 字段级容错：字符串/数字/null/对象/数组只降级本字段，其余字段保留。
+        let bad_values = [
+            ("string", r#""true""#),
+            ("number", "1"),
+            ("float", "1.5"),
+            ("null", "null"),
+            ("object", r#"{"enabled":true}"#),
+            ("array", r#"[true]"#),
+        ];
+        for (label, bad) in bad_values {
+            let json = format!(
+                r#"{{"output_dir":"D:\\kept","fps":60,"include_window_title_in_filename":{bad}}}"#
+            );
+            let s: Settings = serde_json::from_str(&json).unwrap_or_else(|e| {
+                panic!("M19a：坏类型 {label} 不得导致整份设置解析失败（得到 {e}）")
+            });
+            assert!(
+                !s.include_window_title_in_filename,
+                "M19a：{label} 应只把本字段降级为 false"
+            );
+            assert_eq!(s.output_dir, r"D:\kept", "M19a：{label} 不得重置其余字段");
+            assert_eq!(s.fps, 60, "M19a：{label} 不得重置其余字段");
+        }
+    }
+
+    #[test]
+    fn unit_settings_include_window_title_disk_load_tolerates_bad_value() {
+        let dir = temp_dir("privacy-disk");
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        std::fs::write(
+            dir.join("settings.json"),
+            br#"{"output_dir":"D:\\out","fps":60,"include_window_title_in_filename":true}"#,
+        )
+        .expect("write");
+        let s = load_or_default(&dir);
+        assert!(s.include_window_title_in_filename, "磁盘入口应保留 true");
+        assert_eq!(s.fps, 60);
+
+        std::fs::write(
+            dir.join("settings.json"),
+            br#"{"output_dir":"D:\\out","fps":60,"include_window_title_in_filename":"true"}"#,
+        )
+        .expect("write");
+        let s = load_or_default(&dir);
+        assert!(
+            !s.include_window_title_in_filename,
+            "磁盘坏类型应只降级本字段"
+        );
+        assert_eq!(s.output_dir, r"D:\out", "磁盘坏类型不得重置其余字段");
+        assert_eq!(s.fps, 60, "磁盘坏类型不得重置其余字段");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

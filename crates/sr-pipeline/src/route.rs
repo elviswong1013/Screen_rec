@@ -557,6 +557,7 @@ pub fn start_route_with_options(
         keep_segments,
         sr_audio::wasapi::PIPELINE_SAMPLE_RATE,
         crate::naming::OutputContainer::Mkv,
+        true,
     )
 }
 
@@ -574,6 +575,7 @@ pub fn start_audio_route(cfg: AudioRouteConfig) -> Result<RouteHandle, RouteErro
         false,
         sr_audio::wasapi::PIPELINE_SAMPLE_RATE,
         crate::naming::OutputContainer::Mkv,
+        true,
     )
 }
 
@@ -641,13 +643,36 @@ pub fn start_routes_with_options_and_rate(
 }
 
 /// M17/REQ-17：批量启动 + 成品容器（启动时冻结进路由配置；`start_routes_with_options_and_rate`
-/// 保持 MKV 默认行为不变）。
+/// 保持 MKV 默认行为不变；窗口标题隐私开关传 `true`，旧行为不变）。
 pub fn start_routes_with_options_rate_and_container(
     cfgs: Vec<MultiRouteConfig>,
     encoder: Option<String>,
     keep_segments: bool,
     out_rate: u32,
     container: crate::naming::OutputContainer,
+) -> Result<Vec<RouteHandle>, RouteError> {
+    start_routes_with_options_rate_container_and_privacy(
+        cfgs,
+        encoder,
+        keep_segments,
+        out_rate,
+        container,
+        true,
+    )
+}
+
+/// M19a：批量启动 + 成品容器 + 窗口标题隐私开关。
+///
+/// `include_window_title == false`（设置默认）：窗口目标的成品名/manifest 目标名
+/// 使用通用 `Window {seq}`，不含窗口标题；`true`：保留旧行为（标题经 sanitize 进名）。
+/// 语义与 [`start_routes_with_options_rate_and_container`] 相同（含全成功或回滚）。
+pub fn start_routes_with_options_rate_container_and_privacy(
+    cfgs: Vec<MultiRouteConfig>,
+    encoder: Option<String>,
+    keep_segments: bool,
+    out_rate: u32,
+    container: crate::naming::OutputContainer,
+    include_window_title: bool,
 ) -> Result<Vec<RouteHandle>, RouteError> {
     assert!(out_rate > 0, "输出采样率必须为正");
     let mut handles: Vec<RouteHandle> = Vec::new();
@@ -661,6 +686,7 @@ pub fn start_routes_with_options_rate_and_container(
             keep_segments,
             out_rate,
             container,
+            include_window_title,
         ) {
             Ok(h) => handles.push(h),
             Err(e) => {
@@ -1693,6 +1719,7 @@ fn start_route_impl(
     keep_segments: bool,
     out_rate: u32,
     container: crate::naming::OutputContainer,
+    include_window_title: bool,
 ) -> Result<RouteHandle, RouteError> {
     let start_delay = START_DELAY_MS.load(Ordering::Acquire);
     if start_delay > 0 {
@@ -1707,7 +1734,12 @@ fn start_route_impl(
     // ── 目标解析（M18：区域 = 单显示器内帧内 crop；窗口/显示器路径不变） ──
     let mut region_watch: Option<RegionWatch> = None;
     let (stream_kind, target_name) = match &target {
-        RouteTarget::Window { hwnd } => (StreamKind::Window(*hwnd), window_title(*hwnd)),
+        RouteTarget::Window { hwnd } => {
+            let title = window_title(*hwnd);
+            let name =
+                crate::naming::output_target_name(&title, u64::from(seq), include_window_title);
+            (StreamKind::Window(*hwnd), name)
+        }
         RouteTarget::Monitor { index } => (StreamKind::Monitor(*index), format!("Monitor {index}")),
         RouteTarget::Region {
             display_device,

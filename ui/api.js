@@ -266,6 +266,8 @@ function makeMock() {
     encoder: 'auto',
     segment_secs: 5,
     keep_segments: false,
+    // M19a：成品文件名包含窗口标题（隐私敏感，默认关闭）
+    include_window_title_in_filename: false,
   });
   let settings;
   try {
@@ -536,7 +538,8 @@ function makeMock() {
       if (!['mkv', 'mp4'].includes(next.output_container)) {
         next.output_container = 'mkv'; // REQ-16：与后端字段级容错同口径
       }
-      settings = structuredClone(next);
+      // 合并保留：next 未携带的既有字段（如新增设置项）不丢失（设置为扁平结构）。
+      settings = Object.assign(structuredClone(settings), next);
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
       return null;
     },

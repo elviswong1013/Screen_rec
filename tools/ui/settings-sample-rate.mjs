@@ -7,6 +7,8 @@
 //   `<` 所选 < 原生率（升采样提示）/ `=` 相等 / `>` 低于原生率 /
 //   未知（查询返回 null）/ 保存后重载保持 / 查询失败（异常隔离）；
 // 另验证麦克风设备变更触发原生率刷新，以及 api.js real/mock 双接线静态断言。
+// 附加覆盖（M19a）：「成品文件名包含窗口标题」隐私开关——默认 false / 开关
+// 往返保存 / 不影响采样率、成品容器与 keep_segments。
 //
 // 运行：node tools/ui/settings-sample-rate.mjs   （失败 exit 1）
 // ============================================================================
@@ -294,6 +296,19 @@ check(
     /finalizeSession[\s\S]{0,800}containerExt/.test(apiSrc),
   'mock 的正常/提前终态/恢复路径必须按 settings.output_container 返回扩展名'
 );
+// M19a：成品文件名包含窗口标题（隐私开关）静态接线断言。
+check(
+  'api.js mock 默认 include_window_title_in_filename=false',
+  /include_window_title_in_filename:\s*false/.test(apiSrc),
+  'mock 默认设置须含该字段且默认 false'
+);
+check(
+  'api.js mock setSettings 合并保留字段',
+  /Object\.assign\(structuredClone\(settings\),\s*next\)/.test(apiSrc),
+  'setSettings 不得整体替换导致既有字段丢失'
+);
+check('app.js 写入 include_window_title_in_filename', appSrc.includes('include_window_title_in_filename'), '保存设置必须包含该字段');
+check('app.js 渲染窗口标题开关', appSrc.includes('id="set-window-title"'), '设置页需提供该复选框');
 
 const { server, port: httpPort } = await startStaticServer();
 const base = `http://127.0.0.1:${httpPort}/ui/index.html`;
@@ -555,6 +570,67 @@ try {
       'P2-A 反向：录制中改成品格式 → 收尾仍按启动快照 .mp4',
       typeof r?.path === 'string' && r.path.endsWith('.mp4'),
       r?.path
+    );
+  }
+
+  // 15) M19a：「成品文件名包含窗口标题」隐私开关——默认 false → 开 → 关，
+  // 且切换不影响采样率/成品容器/keep_segments。
+  {
+    await clearStorageAndReload(cdp, base);
+    await openSettings(cdp);
+    const box0 = await cdp.evaluate(
+      `(() => { const el = document.querySelector('#set-window-title'); return el ? { present: true, checked: el.checked } : { present: false }; })()`
+    );
+    check('窗口标题开关存在且默认未勾选', box0?.present === true && box0?.checked === false, JSON.stringify(box0));
+    const s0 = await cdp.evaluate(`window.SR.api.getSettings()`);
+    check(
+      'getSettings 默认 include_window_title_in_filename=false',
+      s0?.include_window_title_in_filename === false,
+      JSON.stringify(s0?.include_window_title_in_filename)
+    );
+    const hint0 = await cdp.evaluate(
+      `(() => { const el = document.querySelector('#set-window-title'); return el?.closest('.check-row')?.nextElementSibling?.textContent || ''; })()`
+    );
+    check('窗口标题开关含隐私提示', hint0.includes('默认关闭') && hint0.includes('可能含文档名/聊天对象'), hint0.trim());
+
+    // 勾选 true → 保存 → getSettings 返回 true
+    await cdp.evaluate(`(() => {
+      const el = document.querySelector('#set-window-title');
+      el.checked = true;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      document.querySelector('#btn-save-settings').click();
+    })()`);
+    await waitForText(cdp, '#settings-msg', '已保存');
+    const s1 = await cdp.evaluate(`window.SR.api.getSettings()`);
+    check('勾选保存后 getSettings 返回 true', s1?.include_window_title_in_filename === true, JSON.stringify(s1?.include_window_title_in_filename));
+    check(
+      '开启后采样率/容器/keep_segments 不变',
+      s1?.audio_sample_rate === 48000 && s1?.output_container === 'mkv' && s1?.keep_segments === false,
+      JSON.stringify({ sr: s1?.audio_sample_rate, c: s1?.output_container, k: s1?.keep_segments })
+    );
+
+    // 保存重载后勾选保持 true（mock localStorage 持久化）
+    await cdp.navigate(base);
+    await openSettings(cdp);
+    const box1 = await cdp.evaluate(
+      `(() => { const el = document.querySelector('#set-window-title'); return el ? el.checked : null; })()`
+    );
+    check('保存重载后勾选保持 true', box1 === true, JSON.stringify(box1));
+
+    // 取消勾选 → 保存 → getSettings 返回 false
+    await cdp.evaluate(`(() => {
+      const el = document.querySelector('#set-window-title');
+      el.checked = false;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      document.querySelector('#btn-save-settings').click();
+    })()`);
+    await waitForText(cdp, '#settings-msg', '已保存');
+    const s2 = await cdp.evaluate(`window.SR.api.getSettings()`);
+    check('取消勾选保存后 getSettings 返回 false', s2?.include_window_title_in_filename === false, JSON.stringify(s2?.include_window_title_in_filename));
+    check(
+      '关闭后采样率/容器/keep_segments 仍不变',
+      s2?.audio_sample_rate === 48000 && s2?.output_container === 'mkv' && s2?.keep_segments === false,
+      JSON.stringify({ sr: s2?.audio_sample_rate, c: s2?.output_container, k: s2?.keep_segments })
     );
   }
 } catch (e) {

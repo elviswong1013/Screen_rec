@@ -1397,6 +1397,8 @@ function renderSettings() {
     <label class="check-row"><input type="checkbox" id="set-cursor" ${s.cursor ? 'checked' : ''} /><span>默认捕获光标</span></label>
     <label class="check-row"><input type="checkbox" id="set-keep-segments" ${s.keep_segments ? 'checked' : ''} /><span>保留原始分段（调试/排查用）</span></label>
     <div class="hint" style="margin:-6px 0 0 26px;">默认关闭：成品验证成功后自动清理 .screenrec_tmp 会话目录；录制失败时始终保留原段。</div>
+    <label class="check-row"><input type="checkbox" id="set-window-title" ${s.include_window_title_in_filename ? 'checked' : ''} /><span>成品文件名包含窗口标题</span></label>
+    <div class="hint" style="margin:-6px 0 0 26px;">默认关闭。开启后窗口标题（可能含文档名/聊天对象）会写入文件名。</div>
     <div style="margin-top:18px;display:flex;gap:10px;align-items:center;">
       <button class="btn-primary" id="btn-save-settings">保存设置</button>
       <span id="settings-msg" class="muted" style="font-size:12.5px;"></span>
@@ -1414,6 +1416,7 @@ function renderSettings() {
       encoder: $('#set-enc').value,
       segment_secs: Math.max(1, Number($('#set-seg').value) || 5),
       keep_segments: $('#set-keep-segments').checked,
+      include_window_title_in_filename: $('#set-window-title').checked,
     };
     const msg = $('#settings-msg');
     try {

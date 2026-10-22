@@ -779,6 +779,23 @@ fn repair_wavs_in(dir: &Path) -> Result<Vec<PathBuf>, RecoveryError> {
     Ok(repaired)
 }
 
+/// M19a：恢复成品 stem。
+///
+/// `include_window_title == false`（设置默认）→ `{timestamp}_recovered-{sanitize(route_id)}`
+/// （不含旧窗口标题）；`true` → `{timestamp}_{sanitize(identity_name)}`（旧行为）。
+pub fn recovery_output_stem(
+    identity_name: &str,
+    route_id: &str,
+    include_window_title: bool,
+    timestamp: &str,
+) -> String {
+    if include_window_title {
+        format!("{timestamp}_{}", sanitize_target_name(identity_name))
+    } else {
+        format!("{timestamp}_recovered-{}", sanitize_target_name(route_id))
+    }
+}
+
 /// 崩溃收尾（幂等）：清单可读 + 会话非活动 → 逐路收尾；成品落 output_dir 根
 /// （REQ-24 命名；安全提交）。等价于 [`finalize_session_with_options`] 且
 /// `keep_segments=false`（M14c 默认策略：成品验证成功后清理会话目录）。
@@ -805,13 +822,27 @@ pub fn finalize_session_with_options(
 }
 
 /// M17/REQ-18：崩溃收尾 + 成品容器（未完成路由按此容器产出；已有有效 `final_path`
-/// 幂等复用，不因设置变化再生成另一容器）。
+/// 幂等复用，不因设置变化再生成另一容器）。窗口标题隐私开关传 `true`，旧行为不变。
 pub fn finalize_session_with_options_and_container(
     session_dir: &Path,
     keep_segments: bool,
     container: crate::naming::OutputContainer,
 ) -> Result<RecoveryOutcome, RecoveryError> {
-    finalize_session_impl(session_dir, keep_segments, container)
+    finalize_session_with_options_container_and_privacy(session_dir, keep_segments, container, true)
+}
+
+/// M19a：崩溃收尾 + 容器 + 窗口标题隐私开关。
+///
+/// `include_window_title == false`（设置默认）：未完成路由的成品名使用通用
+/// `{timestamp}_recovered-{route_id}`，不含旧 manifest 的窗口标题；`true`：保留旧行为
+/// `{timestamp}_{sanitize(identity.name)}`。既有有效 `final_path` 仍幂等复用。
+pub fn finalize_session_with_options_container_and_privacy(
+    session_dir: &Path,
+    keep_segments: bool,
+    container: crate::naming::OutputContainer,
+    include_window_title: bool,
+) -> Result<RecoveryOutcome, RecoveryError> {
+    finalize_session_impl(session_dir, keep_segments, container, include_window_title)
 }
 
 /// 既有成品容器（P1-3：按扩展名推断，复用前校验容器族与声明一致）。
@@ -827,6 +858,7 @@ fn finalize_session_impl(
     session_dir: &Path,
     keep_segments: bool,
     container: crate::naming::OutputContainer,
+    include_window_title: bool,
 ) -> Result<RecoveryOutcome, RecoveryError> {
     if !session_dir.is_dir() {
         return Err(RecoveryError::NotFound {
@@ -918,13 +950,14 @@ fn finalize_session_impl(
                 ),
             });
         }
-        let stem = format!(
-            "{}_{}",
-            crate::naming::format_timestamp(
+        let stem = recovery_output_stem(
+            &route.identity.name,
+            &route.route_id,
+            include_window_title,
+            &crate::naming::format_timestamp(
                 crate::route::current_unix_ms(),
-                crate::route::local_utc_offset_minutes()
+                crate::route::local_utc_offset_minutes(),
             ),
-            sanitize_target_name(&route.identity.name)
         );
         let final_path = next_available(&output_root, &stem, container.extension());
         let list_path = session_dir.join(format!(".finalize.{}.ffconcat", route.route_id));
@@ -1130,6 +1163,45 @@ mod tests {
             "失败路径应移除占用标记"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ─────────────────── M19a：恢复命名隐私（默认不含旧标题） ───────────────────
+
+    #[test]
+    fn recovery_output_stem_default_does_not_include_identity_title() {
+        let stem = recovery_output_stem("Secret Window Title", "route-7", false, "20261023_120000");
+        assert_eq!(stem, "20261023_120000_recovered-route-7");
+        assert!(
+            !stem.contains("Secret Window Title"),
+            "M19a：默认 false 不得包含旧标题（得到 {stem:?}）"
+        );
+    }
+
+    #[test]
+    fn recovery_output_stem_true_keeps_sanitized_identity_title() {
+        let title = "Secret/Window:Title";
+        let stem = recovery_output_stem(title, "route-7", true, "20261023_120000");
+        assert_eq!(
+            stem,
+            format!("20261023_120000_{}", sanitize_target_name(title))
+        );
+        assert!(
+            stem.contains("Secret_Window_Title"),
+            "M19a：true 应保留（sanitize 后的）旧标题（得到 {stem:?}）"
+        );
+    }
+
+    #[test]
+    fn recovery_old_v1_manifest_with_title_identity_still_parses() {
+        // 旧 v1 manifest（identity.name 含窗口标题、无任何 M19a 新字段）必须仍可解析；
+        // 收尾/幂等路径由既有 temp_final_session/recorded_final_session 测试覆盖。
+        let json = r#"{"version":1,"session_id":"sess-old","created_at_unix_ms":1,"start_qpc":2,"routes":[{"route_id":"route-1","identity":{"pid":1,"created_at_unix_ms":2,"name":"Old Window Title","path":"C:\\app.exe"},"streams":["v"],"segments":[],"state":"recording","final_path":null}]}"#;
+        let m = manifest_from_json(json).expect("旧 v1 manifest（含标题）必须仍可解析");
+        assert_eq!(m.version, 1);
+        assert_eq!(m.session_id, "sess-old");
+        assert_eq!(m.routes.len(), 1);
+        assert_eq!(m.routes[0].identity.name, "Old Window Title");
+        assert!(m.routes[0].final_path.is_none());
     }
 
     #[test]

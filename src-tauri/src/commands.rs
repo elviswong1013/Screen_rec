@@ -882,12 +882,13 @@ pub(crate) fn start_routes_impl(
     // 在录路由不随保存变更（托盘「开始」同样在调用时取新快照）。
     let settings = current_settings(&app);
     let encoder = encoder_override(&settings);
-    let handles = route::start_routes_with_options_rate_and_container(
+    let handles = route::start_routes_with_options_rate_container_and_privacy(
         cfgs,
         encoder,
         settings.keep_segments,
         settings.audio_sample_rate,
         settings.output_container,
+        settings.include_window_title_in_filename,
     )
     .map_err(|e| e.to_string())?;
     let state = app.state::<CommandsState>();
@@ -1129,12 +1130,14 @@ pub async fn finalize_session(
     blocking(move || {
         // M17/REQ-18：执行时一次读取 output_dir/keep_segments/output_container 同一快照
         // （扫描时不读取；容器设置仅作用于未完成路由）。
+        // M19a：窗口标题隐私开关同快照读取（默认 false = 恢复名不含旧标题）。
         let snap = finalize_session_settings_snapshot(|| current_settings(&app));
         let dir = session_dir_for_output(&snap.output_dir, &session_id)?;
-        let outcome = recovery::finalize_session_with_options_and_container(
+        let outcome = recovery::finalize_session_with_options_container_and_privacy(
             &dir,
             snap.keep_segments,
             snap.output_container,
+            snap.include_window_title_in_filename,
         )
         .map_err(|e| recovery_error_string(&e))?;
         app.state::<CommandsState>().remove_recovery(&session_id);
@@ -1252,13 +1255,15 @@ fn current_settings(app: &AppHandle) -> Settings {
     app.state::<SettingsState>().snapshot()
 }
 
-/// M17/REQ-18：恢复收尾执行时一次读取的三字段快照（output_dir/keep_segments/
+/// M17/REQ-18：恢复收尾执行时一次读取的设置快照（output_dir/keep_segments/
 /// output_container 必须来自**同一** Settings 快照；不得扫描时读取、执行时再读）。
+/// M19a：窗口标题隐私开关同样进入快照（恢复命名与启动命名口径一致）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FinalizeSessionSettings {
     pub output_dir: String,
     pub keep_segments: bool,
     pub output_container: sr_pipeline::naming::OutputContainer,
+    pub include_window_title_in_filename: bool,
 }
 
 /// 生产读取边界（命令层与 L1 注入测试共用）：`provider` 只允许调用一次。
@@ -1270,6 +1275,7 @@ pub(crate) fn finalize_session_settings_snapshot(
         output_dir: s.output_dir,
         keep_segments: s.keep_segments,
         output_container: s.output_container,
+        include_window_title_in_filename: s.include_window_title_in_filename,
     }
 }
 
@@ -1751,10 +1757,12 @@ mod tests {
         first.output_dir = r"D:\first".to_string();
         first.keep_segments = true;
         first.output_container = OutputContainer::Mp4;
+        first.include_window_title_in_filename = true;
         let mut second = Settings::default();
         second.output_dir = r"E:\second".to_string();
         second.keep_segments = false;
         second.output_container = OutputContainer::Mkv;
+        second.include_window_title_in_filename = false;
 
         let snap = finalize_session_settings_snapshot(|| {
             calls.set(calls.get() + 1);
@@ -1775,8 +1783,9 @@ mod tests {
                 output_dir: r"D:\first".to_string(),
                 keep_segments: true,
                 output_container: OutputContainer::Mp4,
+                include_window_title_in_filename: true,
             },
-            "REQ-18：output_dir/keep_segments/output_container 必须来自同一快照"
+            "REQ-18：output_dir/keep_segments/output_container（及 M19a 隐私开关）必须来自同一快照"
         );
     }
 
