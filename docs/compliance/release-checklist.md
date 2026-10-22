@@ -45,7 +45,7 @@
 
 ## G2 产品措施（隐私/安全/知情）
 
-- [ ] **G2-01 持续录制指示**：托盘图标/标题随录制状态变化，或提供置顶小浮窗/任务栏徽标；关闭主窗后仍可见。当前托盘 tooltip 固定、主窗关闭后仅系统捕获边框（可被用户关闭）。证据：[privacy-policy-draft.md](privacy-policy-draft.md)、[lib.rs](../../src-tauri/src/lib.rs)；`[待生成：设计/实现]`。owner：`[待填：产品/前端]`。
+- [~] **G2-01 持续录制指示**：M19b1 已实现托盘 tooltip/菜单/主窗标题按 route id 反映 recording/stopping，录制中首次关闭主窗有一次提示。**仍缺**常驻可见的浮窗/图标；L3 真实托盘/关闭未签。证据：[m19b1-report.md](../milestones/m19b1-report.md)、[lib.rs](../../src-tauri/src/lib.rs)。owner：`[待填：产品/前端]`。
 - [ ] **G2-02 开始前目标/音源摘要与第三方提示**：开始前显示将录制的窗口/显示器/区域、系统/应用/麦克风音频，并提示“请确认已告知参与者”。当前开始按钮即用户操作，无单独隐私确认。证据：`ui/` 流程；`[待生成：设计]`。owner：`[待填：产品/前端]`。
 - [~] **G2-03 文件名/manifest 脱敏**：默认 false（`Window {seq}`）已实现；manifest `identity.name` 与恢复成品名同步；设置开关 `include_window_title_in_filename` 可回退旧行为；旧 API true 兼容。**尚缺**旧会话 UI 标题显示脱敏、安装包重建。证据：[m19a-privacy-redaction.md](../milestones/m19a-privacy-redaction.md)、[privacy-policy-draft.md](privacy-policy-draft.md)。owner：`[待填：工程/产品]`。
 - [ ] **G2-04 日志脱敏**：错误串只保留 basename/哈希/`<redacted>`；避免完整路径、窗口标题、用户名。当前 stderr 可能含路径/标题。证据：[privacy-policy-draft.md](privacy-policy-draft.md)。owner：`[待填：工程]`。

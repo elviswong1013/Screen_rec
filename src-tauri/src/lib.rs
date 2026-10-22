@@ -17,11 +17,13 @@ pub mod commands;
 pub mod region;
 pub mod settings;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
+    tray::{TrayIcon, TrayIconBuilder},
     AppHandle, Manager, State,
 };
 
@@ -81,8 +83,189 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
-/// 托盘提示（无选中目标/已在录制）：原生 MessageBox（不依赖前端页面状态）。
-fn tray_notice(message: &str) {
+// ─────────────────────── M19b1/REQ-1：托盘/主窗状态（纯函数 + 1s 轮询） ───────────────────────
+
+/// 托盘/主窗状态映射结果（纯函数输出；不包含任何 Tauri 句柄）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrayStatus {
+    pub tooltip: String,
+    pub start_enabled: bool,
+    pub stop_enabled: bool,
+    pub title: String,
+}
+
+/// M19b1/REQ-1：按 `recording`/`stopping` 路数生成托盘 tooltip、菜单 enabled 与主窗标题。
+///
+/// 四态契约见 SDD 004 REQ-1；不新增图标资源，不使用 Windows 不支持的
+/// `TrayIcon::set_title`（主窗标题走 `Window::set_title`）。
+pub fn tray_status(recording: usize, stopping: usize) -> TrayStatus {
+    match (recording, stopping) {
+        (0, 0) => TrayStatus {
+            tooltip: "Screen_rec".to_string(),
+            start_enabled: true,
+            stop_enabled: false,
+            title: "Screen_rec".to_string(),
+        },
+        (r, 0) => TrayStatus {
+            tooltip: format!("Screen_rec — 录制中 ({r} 路)"),
+            start_enabled: false,
+            stop_enabled: true,
+            title: format!("● 录制中 ({r}) — Screen_rec"),
+        },
+        (0, s) => TrayStatus {
+            tooltip: format!("Screen_rec — 正在收尾 ({s} 路)"),
+            start_enabled: false,
+            stop_enabled: false,
+            title: format!("收尾中 ({s}) — Screen_rec"),
+        },
+        (r, s) => TrayStatus {
+            tooltip: format!("Screen_rec — 录制中 ({r} 路) · 收尾中 ({s} 路)"),
+            start_enabled: false,
+            stop_enabled: true,
+            title: format!("● 录制中 ({r}) · 收尾中 ({s}) — Screen_rec"),
+        },
+    }
+}
+
+/// M19b1/REQ-2：主窗关闭动作（纯函数输出）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseMainAction {
+    /// 空闲 / 已提示过：静默隐藏。
+    HideSilent,
+    /// 录制中首次关闭：后台弹一次提示。
+    PromptOnce,
+    /// 提示进行中：只 `prevent_close`，不重复弹框。
+    Ignore,
+}
+
+/// M19b1/REQ-2：关闭主窗四分支。
+///
+/// `shown`（本进程已成功提示过）优先于 `pending`：一旦提示成功，后续关闭一律静默
+/// 隐藏；`active=false`（空闲）始终静默隐藏。
+pub fn close_main_action(active: bool, shown: bool, pending: bool) -> CloseMainAction {
+    if !active || shown {
+        CloseMainAction::HideSilent
+    } else if pending {
+        CloseMainAction::Ignore
+    } else {
+        CloseMainAction::PromptOnce
+    }
+}
+
+/// 进程级关闭提示标志（仅 main 窗口使用）：`pending` = 后台 MessageBox 进行中；
+/// `shown` = 本进程已成功提示过。
+static CLOSE_PROMPT_PENDING: AtomicBool = AtomicBool::new(false);
+static CLOSE_PROMPT_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// 托盘状态轮询间隔（固定 1s；初始化立即刷新）。
+const TRAY_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// 启动托盘状态轮询线程：固定 1s 读取 [`commands::CommandsState::route_counts`]；
+/// **只在状态变化时**更新 tooltip/菜单 enabled/主窗标题。状态锁在 `route_counts`
+/// 返回前已释放，UI 调用不持任何路由锁。
+fn spawn_tray_status_poll(
+    app: AppHandle,
+    tray: TrayIcon,
+    start: MenuItem<tauri::Wry>,
+    stop: MenuItem<tauri::Wry>,
+) {
+    let spawned = std::thread::Builder::new()
+        .name("sr-tray-status".to_string())
+        .spawn(move || {
+            let mut last: Option<TrayStatus> = None;
+            loop {
+                // 只拷贝计数；`State` 借用在本语句结束即释放，不跨 UI 调用/睡眠持有。
+                let counts = match app.try_state::<commands::CommandsState>() {
+                    Some(state) => state.route_counts(),
+                    None => return, // 应用退出/状态销毁：轮询结束。
+                };
+                let status = tray_status(counts.recording, counts.stopping);
+                if last.as_ref() != Some(&status) {
+                    apply_tray_status(&app, &tray, &start, &stop, &status);
+                    last = Some(status);
+                }
+                std::thread::sleep(TRAY_STATUS_POLL_INTERVAL);
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("[screen-rec] 托盘状态轮询线程启动失败（tooltip/菜单/标题不更新）：{e}");
+    }
+}
+
+/// 应用一次状态变化（运行在轮询线程；Tauri 菜单/托盘 setter 自行投递主线程）。
+fn apply_tray_status(
+    app: &AppHandle,
+    tray: &TrayIcon,
+    start: &MenuItem<tauri::Wry>,
+    stop: &MenuItem<tauri::Wry>,
+    status: &TrayStatus,
+) {
+    if let Err(e) = tray.set_tooltip(Some(status.tooltip.as_str())) {
+        eprintln!("[screen-rec] 更新托盘 tooltip 失败：{e}");
+    }
+    if let Err(e) = start.set_enabled(status.start_enabled) {
+        eprintln!("[screen-rec] 更新托盘「开始」状态失败：{e}");
+    }
+    if let Err(e) = stop.set_enabled(status.stop_enabled) {
+        eprintln!("[screen-rec] 更新托盘「停止」状态失败：{e}");
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(e) = window.set_title(&status.title) {
+            eprintln!("[screen-rec] 更新主窗标题失败：{e}");
+        }
+    }
+}
+
+/// M19b1/REQ-2：后台显示一次「录制仍在继续」原生提示；成功才隐藏主窗。
+///
+/// 调用方已同步 `prevent_close` 并原子认领 `CLOSE_PROMPT_PENDING`。MessageBox 失败/
+/// 线程启动失败/隐藏失败 → 重置 pending（隐藏失败同时保持 shown=false）、保留窗口，
+/// 下次关闭可重试；只有 MessageBox 确认且窗口隐藏成功后才置 shown。
+fn spawn_close_prompt(app: AppHandle) {
+    let spawned = std::thread::Builder::new()
+        .name("sr-close-prompt".to_string())
+        .spawn(move || {
+            let confirmed = tray_notice("录制仍在继续；可从托盘停止或重新打开窗口");
+            if !confirmed {
+                CLOSE_PROMPT_PENDING.store(false, Ordering::Release);
+                eprintln!("[screen-rec] 录制中关闭提示失败（窗口保留，可再次关闭重试）");
+                return;
+            }
+            let hide_app = app.clone();
+            if let Err(e) = app.run_on_main_thread(move || {
+                let hidden = match hide_app.get_webview_window("main") {
+                    Some(window) => match window.hide() {
+                        Ok(()) => true,
+                        Err(e) => {
+                            eprintln!("[screen-rec] 关闭提示确认后隐藏主窗失败：{e}");
+                            false
+                        }
+                    },
+                    None => true, // 窗口已不存在：视作已隐藏
+                };
+                if hidden {
+                    CLOSE_PROMPT_SHOWN.store(true, Ordering::Release);
+                } else {
+                    CLOSE_PROMPT_SHOWN.store(false, Ordering::Release);
+                }
+                CLOSE_PROMPT_PENDING.store(false, Ordering::Release);
+            }) {
+                CLOSE_PROMPT_SHOWN.store(false, Ordering::Release);
+                CLOSE_PROMPT_PENDING.store(false, Ordering::Release);
+                eprintln!("[screen-rec] 关闭提示确认后投递隐藏失败：{e}");
+            }
+        });
+    if let Err(e) = spawned {
+        CLOSE_PROMPT_PENDING.store(false, Ordering::Release);
+        eprintln!("[screen-rec] 关闭提示线程启动失败（窗口保留，可重试）：{e}");
+    }
+}
+
+/// 托盘提示（无选中目标/已在录制/录制中关闭主窗）：原生 MessageBox。
+///
+/// 返回 `true` = 用户确认（MB_OK）；`false` = MessageBox 创建失败（调用方据此保留
+/// 现场/重置提示标志）。既有托盘调用可忽略返回值。
+fn tray_notice(message: &str) -> bool {
     use windows::core::HSTRING;
     use windows::Win32::UI::WindowsAndMessaging::{
         MessageBoxW, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND,
@@ -90,12 +273,13 @@ fn tray_notice(message: &str) {
     let text = HSTRING::from(message);
     let caption = HSTRING::from("Screen_rec");
     unsafe {
-        let _ = MessageBoxW(
+        MessageBoxW(
             None,
             windows::core::PCWSTR::from_raw(text.as_ptr()),
             windows::core::PCWSTR::from_raw(caption.as_ptr()),
             MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
-        );
+        )
+        .0 != 0
     }
 }
 
@@ -133,11 +317,12 @@ pub fn run() {
             // 尚无配置时以原生提示明确要求先在主窗口选择目标）。
             let show = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
             let start = MenuItem::with_id(app, "start", "开始", true, None::<&str>)?;
-            let stop = MenuItem::with_id(app, "stop", "停止", true, None::<&str>)?;
+            // M19b1/REQ-1：空闲默认「停止」禁用；轮询立即按真实状态刷新。
+            let stop = MenuItem::with_id(app, "stop", "停止", false, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &start, &stop, &quit])?;
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.ico"))?;
-            TrayIconBuilder::with_id("main-tray")
+            let tray = TrayIconBuilder::with_id("main-tray")
                 .icon(icon)
                 .tooltip("Screen_rec")
                 .menu(&menu)
@@ -162,16 +347,43 @@ pub fn run() {
                     _ => {}
                 })
                 .build(app)?;
+            // M19b1/REQ-1：保存 tray/menu 句柄并启动 1s 状态轮询（初始化立即刷新）。
+            // TrayIcon 由轮询线程长期持有（引用计数；避免 setup 返回时最后一个实例被丢弃）。
+            spawn_tray_status_poll(app.handle().clone(), tray, start.clone(), stop.clone());
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // 关闭主窗口不退出进程：隐藏到托盘（REQ-30）。
-                // 录制/收尾在命令层后台线程与 sidecar 中独立推进，隐藏窗口不中断录制；
-                // 「录制中隐藏」的 UI 提示由前端按快照呈现。
-                if window.label() == "main" {
-                    api.prevent_close();
-                    let _ = window.hide();
+                if window.label() != "main" {
+                    return;
+                }
+                // M19b1/REQ-2：关闭主窗口不退出进程（REQ-30）。
+                // 空闲/已提示过 → 静默隐藏；录制中首次 → 同步 prevent_close + 原子认领，
+                // 后台弹一次提示（不得在回调内同步弹框/等线程/持状态锁）。
+                api.prevent_close();
+                let app = window.app_handle();
+                let counts = app
+                    .try_state::<commands::CommandsState>()
+                    .map(|state| state.route_counts())
+                    .unwrap_or_default();
+                let active = counts.recording + counts.stopping > 0;
+                let shown = CLOSE_PROMPT_SHOWN.load(Ordering::Acquire);
+                let pending = CLOSE_PROMPT_PENDING.load(Ordering::Acquire);
+                match close_main_action(active, shown, pending) {
+                    CloseMainAction::HideSilent => {
+                        let _ = window.hide();
+                    }
+                    CloseMainAction::Ignore => {}
+                    CloseMainAction::PromptOnce => {
+                        // 双回调竞态：只有成功认领者弹框；其余只 prevent_close。
+                        if CLOSE_PROMPT_PENDING
+                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                            .is_err()
+                        {
+                            return;
+                        }
+                        spawn_close_prompt(app.clone());
+                    }
                 }
             }
         })
@@ -219,6 +431,92 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    // ─────────────────── M19b1/REQ-1：托盘/主窗状态纯函数 ───────────────────
+
+    #[test]
+    fn tray_status_idle() {
+        let s = tray_status(0, 0);
+        assert_eq!(s.tooltip, "Screen_rec");
+        assert!(s.start_enabled, "空闲时托盘「开始」应可用");
+        assert!(!s.stop_enabled, "空闲时托盘「停止」应禁用");
+        assert_eq!(s.title, "Screen_rec");
+    }
+
+    #[test]
+    fn tray_status_recording() {
+        let s = tray_status(2, 0);
+        assert_eq!(s.tooltip, "Screen_rec — 录制中 (2 路)");
+        assert!(!s.start_enabled, "录制中不得再次开始");
+        assert!(s.stop_enabled, "录制中应可停止");
+        assert_eq!(s.title, "● 录制中 (2) — Screen_rec");
+    }
+
+    #[test]
+    fn tray_status_stopping_only() {
+        let s = tray_status(0, 3);
+        assert_eq!(s.tooltip, "Screen_rec — 正在收尾 (3 路)");
+        assert!(!s.start_enabled, "收尾中不得开始");
+        assert!(!s.stop_enabled, "收尾中停止已无意义");
+        assert_eq!(s.title, "收尾中 (3) — Screen_rec");
+    }
+
+    #[test]
+    fn tray_status_mixed() {
+        let s = tray_status(1, 2);
+        assert_eq!(s.tooltip, "Screen_rec — 录制中 (1 路) · 收尾中 (2 路)");
+        assert!(!s.start_enabled, "混合状态不得开始");
+        assert!(s.stop_enabled, "仍有录制路时应可停止");
+        assert_eq!(s.title, "● 录制中 (1) · 收尾中 (2) — Screen_rec");
+    }
+
+    // ─────────────────── M19b1/REQ-2：关闭主窗一次提示纯函数 ───────────────────
+
+    #[test]
+    fn close_main_action_idle() {
+        assert_eq!(
+            close_main_action(false, false, false),
+            CloseMainAction::HideSilent,
+            "空闲关闭应静默隐藏"
+        );
+        assert_eq!(
+            close_main_action(false, true, false),
+            CloseMainAction::HideSilent,
+            "空闲关闭不因历史提示标志改变"
+        );
+    }
+
+    #[test]
+    fn close_main_action_active_once() {
+        assert_eq!(
+            close_main_action(true, false, false),
+            CloseMainAction::PromptOnce,
+            "录制中首次关闭应提示一次"
+        );
+    }
+
+    #[test]
+    fn close_main_action_pending() {
+        assert_eq!(
+            close_main_action(true, false, true),
+            CloseMainAction::Ignore,
+            "提示进行中重复关闭只 prevent_close"
+        );
+    }
+
+    #[test]
+    fn close_main_action_after_prompt() {
+        assert_eq!(
+            close_main_action(true, true, false),
+            CloseMainAction::HideSilent,
+            "已提示过后关闭应静默隐藏"
+        );
+        assert_eq!(
+            close_main_action(true, true, true),
+            CloseMainAction::HideSilent,
+            "shown 优先后续关闭不重复提示"
+        );
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!(

@@ -433,6 +433,13 @@ pub struct RouteStateOut {
     pub stop_notice: Option<StopNoticeOut>,
 }
 
+/// M19b1/REQ-1：活动路由计数快照（按 route id；终态不计）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RouteCounts {
+    pub recording: usize,
+    pub stopping: usize,
+}
+
 // ─────────────────────────── 运行时状态 ───────────────────────────
 
 /// 命令层运行时状态（Tauri managed state；Hub + 活动路由表 + 恢复扫描缓存）。
@@ -534,6 +541,25 @@ impl CommandsState {
             .expect("路由表锁")
             .values()
             .any(|slot| !is_terminal(&slot.state))
+    }
+
+    /// M19b1/REQ-1：按 route id 统计活动路由；终态 finalized/failed 不计。
+    ///
+    /// 未知非终态（如未来新增的收尾阶段）按 `recording` 保守计入——活动会话不得
+    /// 漏计（关闭提示/托盘禁用「开始」依赖该口径）。锁内只拷贝计数，返回前释放
+    /// 路由锁；调用方可在锁外安全调用 Tauri UI。
+    pub fn route_counts(&self) -> RouteCounts {
+        let routes = self.routes.lock().expect("路由表锁");
+        let mut counts = RouteCounts::default();
+        for slot in routes.values() {
+            match slot.state.as_str() {
+                STATE_RECORDING => counts.recording += 1,
+                STATE_STOPPING => counts.stopping += 1,
+                STATE_FINALIZED | STATE_FAILED => {}
+                _ => counts.recording += 1,
+            }
+        }
+        counts
     }
 
     /// 分配 n 个进程内唯一 route id（`route-{n}`；与管线内部 route_id 无关）。
@@ -1744,6 +1770,83 @@ mod tests {
         let state = CommandsState::new();
         assert!(state.last_routes().is_none(), "无历史启动 → 无选中目标");
         assert!(!state.has_active_routes(), "初始无活动路由");
+    }
+
+    // ─────────────────── M19b1/REQ-1：route_counts 快照统计 ───────────────────
+
+    fn insert_route_state(state: &CommandsState, id: &str, route_state: &str) {
+        state.routes.lock().expect("路由表锁").insert(
+            id.to_string(),
+            RouteSlot {
+                handle: None,
+                state: route_state.to_string(),
+                final_path: None,
+                stop_notice: None,
+            },
+        );
+    }
+
+    #[test]
+    fn unit_route_counts_empty() {
+        let state = CommandsState::new();
+        assert_eq!(
+            state.route_counts(),
+            RouteCounts {
+                recording: 0,
+                stopping: 0
+            }
+        );
+    }
+
+    #[test]
+    fn unit_route_counts_recording_and_stopping_by_route_id() {
+        let state = CommandsState::new();
+        insert_route_state(&state, "route-1", STATE_RECORDING);
+        insert_route_state(&state, "route-2", STATE_RECORDING);
+        insert_route_state(&state, "route-3", STATE_STOPPING);
+        assert_eq!(
+            state.route_counts(),
+            RouteCounts {
+                recording: 2,
+                stopping: 1
+            },
+            "REQ-1：按 route id 分别统计 recording/stopping"
+        );
+        assert!(
+            state.routes.try_lock().is_ok(),
+            "REQ-1：route_counts 返回前必须释放路由锁"
+        );
+    }
+
+    #[test]
+    fn unit_route_counts_excludes_terminal_states() {
+        let state = CommandsState::new();
+        insert_route_state(&state, "route-1", STATE_RECORDING);
+        insert_route_state(&state, "route-2", STATE_STOPPING);
+        insert_route_state(&state, "route-3", STATE_FINALIZED);
+        insert_route_state(&state, "route-4", STATE_FAILED);
+        assert_eq!(
+            state.route_counts(),
+            RouteCounts {
+                recording: 1,
+                stopping: 1
+            },
+            "REQ-1：终态 finalized/failed 不计入"
+        );
+    }
+
+    #[test]
+    fn unit_route_counts_unknown_non_terminal_is_conservatively_recording() {
+        let state = CommandsState::new();
+        insert_route_state(&state, "route-1", "finalizing");
+        assert_eq!(
+            state.route_counts(),
+            RouteCounts {
+                recording: 1,
+                stopping: 0
+            },
+            "REQ-1：未知非终态不得漏计（保守归入 recording）"
+        );
     }
 
     /// M17/REQ-18：恢复收尾执行时只读取一次设置快照；三字段必须来自同一快照。

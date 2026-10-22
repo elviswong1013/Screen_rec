@@ -99,3 +99,4 @@ M19b 只做：托盘/主窗状态查询、录制中关闭主窗一次提示、�
 
 - plan review 于 2026-10-23 APPROVED；用户同日批准 AC-1..AC-4 / REQ-1..5；本规格状态 `Approved`。
 - 实现按 TDD 红→绿，M19b1（REQ-1/2）与 M19b2（REQ-3/4）分批验收；两批均完成并经 acceptor ACCEPTED 后才可 `Implemented`。
+- 进度（2026-10-23）：M19b1 REQ-1/2 源码/纯函数/工作区测试完成；真实托盘/关闭 L3 待签；M19b2 未开始。
