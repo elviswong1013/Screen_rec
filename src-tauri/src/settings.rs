@@ -144,6 +144,10 @@ pub struct Settings {
     /// `Window {seq}`；旧配置缺字段按 false 兼容，坏类型只降级本字段。
     #[serde(default, deserialize_with = "deserialize_lenient_bool")]
     pub include_window_title_in_filename: bool,
+    /// M19b2/REQ-4：主窗开始前告知已确认（`recording_notice_ack`）。默认 false；
+    /// 旧配置缺字段按 false 兼容，坏类型只降级本字段。
+    #[serde(default, deserialize_with = "deserialize_lenient_bool")]
+    pub recording_notice_ack: bool,
 }
 
 fn default_output_dir() -> String {
@@ -361,6 +365,7 @@ impl Default for Settings {
             segment_secs: default_segment_secs(),
             keep_segments: false,
             include_window_title_in_filename: false,
+            recording_notice_ack: false,
         }
     }
 }
@@ -473,6 +478,7 @@ mod tests {
             segment_secs: 10,
             keep_segments: true,
             include_window_title_in_filename: true,
+            recording_notice_ack: true,
             audio_sample_rate: 88_200,
             output_container: sr_pipeline::naming::OutputContainer::Mp4,
         };
@@ -841,6 +847,87 @@ mod tests {
             !s.include_window_title_in_filename,
             "磁盘坏类型应只降级本字段"
         );
+        assert_eq!(s.output_dir, r"D:\out", "磁盘坏类型不得重置其余字段");
+        assert_eq!(s.fps, 60, "磁盘坏类型不得重置其余字段");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─────────────────── M19b2/REQ-4：recording_notice_ack（默认 false / 容错） ───────────────────
+
+    #[test]
+    fn unit_settings_recording_notice_ack_default_false_and_round_trip() {
+        assert!(
+            !Settings::default().recording_notice_ack,
+            "M19b2：默认不得视为已确认开始前告知"
+        );
+
+        let mut s = Settings::default();
+        s.recording_notice_ack = true;
+        s.fps = 60;
+        let json = serde_json::to_string(&s).expect("serialize");
+        let back: Settings = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.recording_notice_ack, "M19b2：true 应可往返持久化");
+        assert_eq!(back.fps, 60, "往返不得重置其余字段");
+    }
+
+    #[test]
+    fn unit_settings_recording_notice_ack_missing_field_false_keeps_others() {
+        let json = r#"{"output_dir":"E:\\out","fps":60}"#;
+        let s: Settings = serde_json::from_str(json).expect("缺字段应可解析");
+        assert!(!s.recording_notice_ack, "M19b2：旧配置缺字段 → false");
+        assert_eq!(s.output_dir, r"E:\out", "其余字段不得被重置");
+        assert_eq!(s.fps, 60, "其余字段不得被重置");
+    }
+
+    #[test]
+    fn unit_settings_recording_notice_ack_bad_types_degrade_field_only() {
+        // 字段级容错：字符串/数字/null/对象/数组只降级本字段，其余字段保留。
+        let bad_values = [
+            ("string", r#""true""#),
+            ("number", "1"),
+            ("float", "1.5"),
+            ("null", "null"),
+            ("object", r#"{"ack":true}"#),
+            ("array", r#"[true]"#),
+        ];
+        for (label, bad) in bad_values {
+            let json =
+                format!(r#"{{"output_dir":"D:\\kept","fps":60,"recording_notice_ack":{bad}}}"#);
+            let s: Settings = serde_json::from_str(&json).unwrap_or_else(|e| {
+                panic!("M19b2：坏类型 {label} 不得导致整份设置解析失败（得到 {e}）")
+            });
+            assert!(
+                !s.recording_notice_ack,
+                "M19b2：{label} 应只把本字段降级为 false"
+            );
+            assert_eq!(s.output_dir, r"D:\kept", "M19b2：{label} 不得重置其余字段");
+            assert_eq!(s.fps, 60, "M19b2：{label} 不得重置其余字段");
+        }
+    }
+
+    #[test]
+    fn unit_settings_recording_notice_ack_disk_load_true_and_bad_value() {
+        let dir = temp_dir("recording-notice-ack-disk");
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        std::fs::write(
+            dir.join("settings.json"),
+            br#"{"output_dir":"D:\\out","fps":60,"recording_notice_ack":true}"#,
+        )
+        .expect("write");
+        let s = load_or_default(&dir);
+        assert!(s.recording_notice_ack, "磁盘入口应保留 true");
+        assert_eq!(s.output_dir, r"D:\out");
+        assert_eq!(s.fps, 60);
+
+        std::fs::write(
+            dir.join("settings.json"),
+            br#"{"output_dir":"D:\\out","fps":60,"recording_notice_ack":"true"}"#,
+        )
+        .expect("write");
+        let s = load_or_default(&dir);
+        assert!(!s.recording_notice_ack, "磁盘坏类型应只降级本字段");
         assert_eq!(s.output_dir, r"D:\out", "磁盘坏类型不得重置其余字段");
         assert_eq!(s.fps, 60, "磁盘坏类型不得重置其余字段");
 

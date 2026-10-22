@@ -446,6 +446,16 @@ try {
   await cdp.send('Runtime.enable');
   await cdp.send('Page.enable');
 
+  // M19b2/REQ-3 适配：本 runner 断言 start DTO 组装/终态护栏语义，而非告知门禁；
+  // 显式经 mock 设置持久化 recording_notice_ack=true（合并保留其他字段），
+  // 使后续直接点开始保持单击启动路径。原断言全部保留。
+  await cdp.navigate(base);
+  await waitForInPage(cdp, '!!window.SR', 8000);
+  await cdp.evaluate(`(async () => {
+    const s = await window.SR.api.getSettings();
+    await window.SR.api.setSettings({ ...s, recording_notice_ack: true });
+  })()`);
+
   // 1) 隔离 + 显示器匹配 → 预选仅端点；取消端点 → 系统预选；全取消 → REQ-14。
   {
     await cdp.navigate(`${base}?native_rate=48000`);

@@ -268,6 +268,8 @@ function makeMock() {
     keep_segments: false,
     // M19a：成品文件名包含窗口标题（隐私敏感，默认关闭）
     include_window_title_in_filename: false,
+    // M19b2/REQ-4：开始前告知「不再显示」持久化（默认 false = 每次都提示）
+    recording_notice_ack: false,
   });
   let settings;
   try {

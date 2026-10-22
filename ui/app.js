@@ -109,7 +109,19 @@ const state = {
   recovery: [],              // 未收尾会话
   recentFiles: [],
   starting: false,
+  // M19b2/REQ-3 开始确认状态机（会话内存）：Idle -> Expanded(plan) -> Starting。
+  // Starting 由 state.starting 表达；每次新启动尝试（配置变化/取消/成败后）复位 Idle。
+  startConfirm: { phase: 'idle', signature: null },
 };
+
+// M19b2/REQ-4：所有 Settings 写入串行化。ack 勾选与设置页保存可能并发；
+// 每个任务在队列内重新读取最新 Settings，避免旧快照后写覆盖新值。
+let settingsWriteChain = Promise.resolve();
+function enqueueSettingsWrite(task) {
+  const run = settingsWriteChain.then(task, task);
+  settingsWriteChain = run.catch(() => {});
+  return run;
+}
 
 const targetKey = (t) => (t.hwnd !== undefined ? `window:${t.hwnd}` : (t.kind === 'region' || t.rect ? 'region:0' : `monitor:${t.index}`));
 
@@ -131,6 +143,7 @@ $$('.nav-item').forEach((btn) => {
     if (state.view === 'merge') renderMerge();
     if (state.view === 'settings') renderSettings();
     if (state.view === 'screenshot') renderScreenshotView();
+    if (state.view === 'record') renderStartBar(); // 回到录制视图时按最新设置刷新摘要/复位确认
   });
 });
 
@@ -334,7 +347,7 @@ function renderConfig() {
         <div class="hint">每个来源输出一个独立 WAV 文件（48kHz），停止即成品。</div>
       </div>
       <div class="notice info">纯录音支持系统音频、麦克风与正在发声的应用，可多选；各来源互不混音。</div>`;
-    $('#cfg-outdir').addEventListener('input', (e) => { state.audioOnly.outputDir = e.target.value; });
+    $('#cfg-outdir').addEventListener('input', (e) => { state.audioOnly.outputDir = e.target.value; renderStartBar(); });
     return;
   }
 
@@ -432,11 +445,19 @@ function renderConfig() {
   // 绑定
   $('#cfg-canvas').addEventListener('change', (e) => { cfg.canvas = e.target.value; renderStartBar(); });
   $('#cfg-fps').addEventListener('change', (e) => { cfg.fps = Number(e.target.value); renderStartBar(); });
-  $('#cfg-outdir').addEventListener('input', (e) => { cfg.outputDir = e.target.value; });
-  $$('input[name="audio-mode"]', panel).forEach((r) => r.addEventListener('change', () => { cfg.audioMode = r.value; renderConfig(); }));
-  bindCheck('#cfg-cursor', (v) => { cfg.cursor = v; });
-  bindCheck('#cfg-src-system', (v) => { cfg.srcSystem = v; });
-  bindCheck('#cfg-src-mic', (v) => { cfg.srcMic = v; renderConfig(); });
+  $('#cfg-outdir').addEventListener('input', (e) => { cfg.outputDir = e.target.value; renderStartBar(); });
+  $$('input[name="audio-mode"]', panel).forEach((r) => r.addEventListener('change', () => {
+    cfg.audioMode = r.value;
+    renderConfig();
+    renderStartBar(); // 音轨模式改变会改变 canStart/needs_notice，必须刷新开始栏
+  }));
+  bindCheck('#cfg-cursor', (v) => { cfg.cursor = v; renderStartBar(); });
+  bindCheck('#cfg-src-system', (v) => { cfg.srcSystem = v; renderStartBar(); });
+  bindCheck('#cfg-src-mic', (v) => {
+    cfg.srcMic = v;
+    renderConfig(); // 麦克风勾选会重建音源区
+    renderStartBar(); // 同时刷新计划签名/告知门禁
+  });
   state.audioSources.forEach((a) => bindCheck(`#cfg-app-${a.pid}`, (v) => { v ? cfg.srcApps.add(a.pid) : cfg.srcApps.delete(a.pid); renderStartBar(); }));
   $('#cfg-apps-all')?.addEventListener('click', () => {
     state.audioSources.forEach((a) => cfg.srcApps.add(a.pid));
@@ -625,32 +646,245 @@ function renderAudioSourcesPanel(body, store) {
 // ---------------------------------------------------------------------------
 // 录制视图 — 开始栏与启动
 // ---------------------------------------------------------------------------
+// M19b2/REQ-3：音源含麦克风/系统/端点 → 开始前需告知确认。
+const NOTICE_SOURCE_KINDS = new Set(['mic', 'system', 'render_endpoint']);
+const NOTICE_KIND_LABEL = { mic: '麦克风', system: '系统声音', render_endpoint: '显示器输出端点' };
+
 function renderStartBar() {
   const bar = $('#start-bar');
-  const [w, h] = state.cfg.canvas.split('x');
-  let summary, canStart, label;
-  if (state.recordMode === 'screen') {
-    const n = state.selected.size + (state.regionTarget ? 1 : 0);
-    summary = n
-      ? `已选 <b>${n}</b> 个目标${state.regionTarget ? `（区域 ${state.regionTarget.rect.w}×${state.regionTarget.rect.h}）` : ''} · ${w}×${h} @${state.cfg.fps}fps · ${state.cfg.audioMode === 'isolated' ? '隔离' : '全音轨'}`
-      : '先在左侧选择要录制的窗口或显示器（可多选，每路独立输出）';
-    const regionBlocked = state.regionTarget && regionSourceCount() === 0;
-    canStart = n > 0 && !!state.caps?.encoders.some((e) => e.available) && !regionBlocked;
-    label = n > 1 ? `开始录制（${n} 路）` : '开始录制';
-    if (regionBlocked) summary += ' · <span class="muted">区域目标尚未选择音源</span>';
-  } else {
-    const n = audioOnlySourceCount();
-    summary = n ? `已选 <b>${n}</b> 个音源 · 各输出独立 WAV` : '先在左侧选择至少一个音源';
-    canStart = n > 0;
-    label = '开始录音';
+  bar.style.flexWrap = 'wrap'; // 展开摘要面板占整行（inline，不改 styles.css）
+  const plan = buildStartPlan();
+  // REQ-3：目标/音源/输出/格式任何变化 → 展开态复位到 Idle，下次启动需重新确认。
+  if (state.startConfirm.phase === 'expanded' && state.startConfirm.signature !== plan.signature) {
+    state.startConfirm = { phase: 'idle', signature: null };
   }
+  const expanded = state.startConfirm.phase === 'expanded';
+  const ack = state.settings?.recording_notice_ack === true;
+  const confirmPending = expanded && plan.needs_notice && !ack;
+  const label = state.starting
+    ? '<span class="spin"></span> 启动中…'
+    : confirmPending ? '确认并开始' : plan.buttonLabel;
   bar.innerHTML = `
-    <span class="summary">${summary}</span>
+    <span class="summary">${plan.summary}</span>
+    <button class="btn-sm btn-ghost" id="btn-start-detail" ${plan.canExpand || expanded ? '' : 'disabled'}>${expanded ? '收起摘要' : '摘要'}</button>
     <span class="muted" style="font-size:12px;">Ctrl+Enter</span>
-    <button class="${state.recordMode === 'screen' ? 'btn-rec' : 'btn-primary'}" id="btn-start" ${canStart && !state.starting ? '' : 'disabled'}>
-      ${state.starting ? '<span class="spin"></span> 启动中…' : label}
-    </button>`;
-  $('#btn-start').addEventListener('click', startRecording);
+    <button class="${state.recordMode === 'screen' ? 'btn-rec' : 'btn-primary'}" id="btn-start" ${plan.canStart && !state.starting ? '' : 'disabled'}>${label}</button>
+    ${expanded ? `
+      <div id="start-plan" style="flex-basis:100%;border-top:1px solid var(--border);padding-top:8px;">
+        ${plan.detail.map((d) => `<div class="hint">${esc(d)}</div>`).join('')}
+        ${plan.needs_notice ? `
+          <div class="notice warn" id="start-notice" style="margin:6px 0 0;">
+            本次录制包含${plan.noticeKinds.map((k) => NOTICE_KIND_LABEL[k]).join('、')}：会记录目标应用之外的声音。
+            <div style="margin-top:4px;display:flex;gap:14px;align-items:center;">
+              <label style="display:inline-flex;gap:6px;align-items:center;cursor:pointer;">
+                <input type="checkbox" id="start-notice-ack" ${ack ? 'checked' : ''} /><span>不再显示此提示</span>
+              </label>
+              ${confirmPending ? '<button class="btn-sm btn-ghost" id="btn-start-cancel">取消</button>' : ''}
+            </div>
+          </div>` : ''}
+      </div>` : ''}`;
+  $('#btn-start').addEventListener('click', onStartClick);
+  $('#btn-start-detail').addEventListener('click', () => {
+    // 摘要手动展开/收起（不启动）；收起即复位 Idle。
+    state.startConfirm = expanded
+      ? { phase: 'idle', signature: null }
+      : { phase: 'expanded', signature: plan.signature };
+    renderStartBar();
+  });
+  $('#btn-start-cancel')?.addEventListener('click', () => {
+    state.startConfirm = { phase: 'idle', signature: null };
+    renderStartBar();
+  });
+  $('#start-notice-ack')?.addEventListener('change', (e) => onNoticeAckChange(e.target));
+}
+
+// REQ-4：「不再显示此提示」只保存 ack，不启动；先读当前完整 Settings、
+// 仅改该字段再整体保存（保留其他字段）；失败如实提示，不伪装成功。
+async function onNoticeAckChange(box) {
+  const want = box.checked;
+  box.disabled = true;
+  try {
+    await enqueueSettingsWrite(async () => {
+      const cur = await api.getSettings();
+      const next = { ...cur, recording_notice_ack: want };
+      await api.setSettings(next);
+      state.settings = next;
+    });
+    toast('ok', want ? '已保存：开始前告知不再显示' : '已保存：恢复开始前告知');
+  } catch (e) {
+    toast('err', `保存失败：${e}`);
+  }
+  renderStartBar();
+}
+
+// M19b2/REQ-3：单一启动计划来源——同时产出启动 DTO、摘要与 needs_notice。
+// 覆盖窗口/逐屏/区域/纯录音；纯录音显示 WAV、不含画布/帧率；区域显示最终选区尺寸。
+// 零音源不在此拒绝（doStart 保留既有拦截与提示）。
+function buildStartPlan() {
+  const s = state.settings || {};
+  const noticeKindsOf = (sources) =>
+    [...new Set(sources.filter((x) => NOTICE_SOURCE_KINDS.has(x.kind)).map((x) => x.kind))];
+
+  if (state.recordMode === 'audio') {
+    const a = state.audioOnly;
+    const sources = [];
+    const labels = [];
+    if (a.srcSystem) { sources.push({ kind: 'system' }); labels.push('系统音频'); }
+    if (a.srcMic && s.mic_device) { sources.push({ kind: 'mic', device_id: s.mic_device }); labels.push('麦克风'); }
+    for (const pid of a.srcApps) {
+      const src = state.audioSources.find((x) => x.pid === pid);
+      if (src) { sources.push({ kind: 'app', pid: src.pid, created_at_unix_ms: src.created_at_unix_ms ?? 0 }); labels.push(`应用 · ${src.app_name}`); }
+    }
+    const outDir = a.outputDir.trim() || s.output_dir || '';
+    const n = audioOnlySourceCount();
+    const dto = [{ sources, output_dir: outDir, _ui_track_labels: labels }];
+    const noticeKinds = noticeKindsOf(sources);
+    return {
+      mode: 'audio',
+      dto,
+      canStart: n > 0,
+      canExpand: n > 0,
+      needs_notice: noticeKinds.length > 0,
+      noticeKinds,
+      buttonLabel: '开始录音',
+      summary: n ? `已选 <b>${n}</b> 个音源 · 各输出独立 WAV` : '先在左侧选择至少一个音源',
+      detail: [
+        `音源：${labels.join('、')}`,
+        `输出目录：${outDir} · 格式：WAV（每个来源一个独立文件）`,
+      ],
+      signature: JSON.stringify({ mode: 'audio', dto }),
+    };
+  }
+
+  const [w, h] = state.cfg.canvas.split('x');
+  const [cw, ch] = [Number(w), Number(h)];
+  const outDir = state.cfg.outputDir.trim() || s.output_dir || '';
+  const fmt = s.output_container === 'mp4' ? 'MP4' : 'MKV';
+  const routeCfgs = [...state.selected].map((key) => {
+    const t = findTarget(key);
+    const target = t.hwnd !== undefined ? { kind: 'window', hwnd: t.hwnd } : { kind: 'monitor', index: t.index };
+    const audio = buildAudioPlan(t);
+    return {
+      target,
+      video: { canvas_w: cw, canvas_h: ch, fps: state.cfg.fps, cursor: state.cfg.cursor },
+      audio: { mode: audio.mode, sources: audio.sources },
+      output_dir: outDir,
+      _ui_label: t.hwnd !== undefined ? t.app_name : `显示器${t.index + 1} · ${t.name}`,
+      _ui_track_labels: audio.labels,
+    };
+  });
+  // M18：区域目标（独立分支；display_device 只用稳定路径或 GDI szDevice）。
+  // regionDisplayDevice：null=无区域目标；''=缺稳定标识（doStart 拦截提示）。
+  let regionDisplayDevice = null;
+  if (state.regionTarget) {
+    const rt = state.regionTarget;
+    regionDisplayDevice = rt.display?.device_path || rt.display?.device_name || rt.display_device || '';
+    const audio = buildRegionAudioPlan();
+    routeCfgs.push({
+      target: {
+        kind: 'region',
+        display_device: regionDisplayDevice,
+        rect: { x: rt.rect.x, y: rt.rect.y, w: rt.rect.w, h: rt.rect.h },
+      },
+      video: { canvas_w: cw, canvas_h: ch, fps: state.cfg.fps, cursor: state.cfg.cursor },
+      audio: { mode: audio.mode, sources: audio.sources },
+      output_dir: outDir,
+      _ui_label: `区域 ${rt.rect.w}×${rt.rect.h}`,
+      _ui_track_labels: audio.labels,
+    });
+  }
+  const n = routeCfgs.length;
+  const regionBlocked = !!state.regionTarget && regionSourceCount() === 0;
+  const canStart = n > 0 && !!state.caps?.encoders.some((e) => e.available) && !regionBlocked;
+  let summary = n
+    ? `已选 <b>${n}</b> 个目标${state.regionTarget ? `（区域 ${state.regionTarget.rect.w}×${state.regionTarget.rect.h}）` : ''} · ${w}×${h} @${state.cfg.fps}fps · ${state.cfg.audioMode === 'isolated' ? '隔离' : '全音轨'}`
+    : '先在左侧选择要录制的窗口或显示器（可多选，每路独立输出）';
+  if (regionBlocked) summary += ' · <span class="muted">区域目标尚未选择音源</span>';
+  const noticeKinds = noticeKindsOf(routeCfgs.flatMap((c) => c.audio.sources));
+  return {
+    mode: 'screen',
+    dto: routeCfgs,
+    regionDisplayDevice,
+    canStart,
+    canExpand: n > 0,
+    needs_notice: noticeKinds.length > 0,
+    noticeKinds,
+    buttonLabel: n > 1 ? `开始录制（${n} 路）` : '开始录制',
+    summary,
+    detail: [
+      ...routeCfgs.map((c) => `目标：${c._ui_label} · 音源：${(c._ui_track_labels || []).join('、') || '（无）'}`),
+      `输出目录：${outDir} · 成品格式：${fmt} · 画布 ${w}×${h} @${state.cfg.fps}fps`,
+    ],
+    signature: JSON.stringify({ mode: 'screen', dto: routeCfgs, fmt }),
+  };
+}
+
+// M19b2/REQ-3 开始门禁：needs_notice 且未勾选「不再显示」时，
+// 第一次点击只展开摘要+告知；第二次「确认并开始」才调用启动 API。
+// 仅 app 音源或 ack=true：一次点击启动。Ctrl+Enter 走同一门禁（点按钮）。
+async function onStartClick() {
+  if (state.starting) return;
+  const plan = buildStartPlan();
+  if (!plan.canStart) return; // 按钮已禁用；仅作键盘/程序化兜底
+  const ack = state.settings?.recording_notice_ack === true;
+  if (plan.needs_notice && !ack) {
+    if (state.startConfirm.phase !== 'expanded' || state.startConfirm.signature !== plan.signature) {
+      // 首次（或展开后计划已变化）：仅展开告知，不启动。
+      state.startConfirm = { phase: 'expanded', signature: plan.signature };
+      renderStartBar();
+      return;
+    }
+  }
+  await doStart(plan);
+}
+
+async function doStart(plan) {
+  state.starting = true;
+  renderStartBar();
+  try {
+    if (plan.mode === 'screen') {
+      if (state.regionTarget && !plan.regionDisplayDevice) {
+        toast('warn', '区域目标缺少稳定显示器标识（设备路径/GDI 名称），请重新框选');
+        return;
+      }
+      // 前端预检：任何一路音源为空都会被后端拒绝（批次全成功或回滚），提前拦截并说明
+      const empty = plan.dto.filter((c) => c.audio.sources.length === 0);
+      if (empty.length) {
+        toast('warn', `${empty.map((c) => c._ui_label).join('、')} 没有任何音源：显示器目标请勾选该屏输出端点，或系统音频/麦克风；区域隔离请选择至少一个应用（不静默录制）`);
+        return;
+      }
+      const { route_ids } = await api.startRoutes(plan.dto);
+      route_ids.forEach((id, i) => registerRoute(id, {
+        kind: 'video',
+        label: plan.dto[i]._ui_label,
+        icon: plan.dto[i].target.kind === 'window' ? ICONS.window : ICONS.monitor,
+        trackLabels: plan.dto[i]._ui_track_labels,
+      }));
+      state.selected.clear();
+      state.regionTarget = null;
+      state.regionRequestId = null;
+      toast('ok', `已开始 ${route_ids.length} 路录制`);
+    } else {
+      const labels = plan.dto[0]._ui_track_labels;
+      // 后端契约：一次调用 N 源 → N 个共享 handle 的 route id（任一停止即整组停止）
+      const { route_ids } = await api.startAudioOnly(plan.dto);
+      route_ids.forEach((id, i) => registerRoute(id, {
+        kind: 'audio',
+        label: labels[i] ? `录音 · ${labels[i]}` : `录音 ${i + 1}`,
+        icon: ICONS.mic,
+        trackLabels: [labels[i] || `来源 ${i + 1}`],
+      }));
+      toast('ok', `已开始录音（${route_ids.length} 个来源）`);
+    }
+    renderLeftPanel();
+  } catch (e) {
+    toast('err', `启动失败：${e}`);
+  } finally {
+    state.starting = false;
+    // REQ-3：启动失败/完成均复位到 Idle；每次新启动尝试都需重新确认。
+    state.startConfirm = { phase: 'idle', signature: null };
+    renderStartBar();
+  }
 }
 
 function audioOnlySourceCount() {
@@ -774,98 +1008,7 @@ function regionSourceCount() {
     + (ra.micSelected && state.settings?.mic_device ? 1 : 0) + ra.apps.size;
 }
 
-async function startRecording() {
-  if (state.starting) return;
-  state.starting = true;
-  renderStartBar();
-  try {
-    if (state.recordMode === 'screen') {
-      const [cw, ch] = state.cfg.canvas.split('x').map(Number);
-      const outDir = state.cfg.outputDir.trim() || state.settings.output_dir;
-      const routeCfgs = [...state.selected].map((key) => {
-        const t = findTarget(key);
-        const target = t.hwnd !== undefined ? { kind: 'window', hwnd: t.hwnd } : { kind: 'monitor', index: t.index };
-        const audio = buildAudioPlan(t);
-        return {
-          target,
-          video: { canvas_w: cw, canvas_h: ch, fps: state.cfg.fps, cursor: state.cfg.cursor },
-          audio: { mode: audio.mode, sources: audio.sources },
-          output_dir: outDir,
-          _ui_label: t.hwnd !== undefined ? t.app_name : `显示器${t.index + 1} · ${t.name}`,
-          _ui_track_labels: audio.labels,
-        };
-      });
-      // M18：区域目标（独立分支；display_device 只用稳定路径或 GDI szDevice）。
-      if (state.regionTarget) {
-        const rt = state.regionTarget;
-        const displayDevice = rt.display?.device_path || rt.display?.device_name || rt.display_device || '';
-        if (!displayDevice) {
-          toast('warn', '区域目标缺少稳定显示器标识（设备路径/GDI 名称），请重新框选');
-          state.starting = false;
-          renderStartBar();
-          return;
-        }
-        const audio = buildRegionAudioPlan();
-        routeCfgs.push({
-          target: {
-            kind: 'region',
-            display_device: displayDevice,
-            rect: { x: rt.rect.x, y: rt.rect.y, w: rt.rect.w, h: rt.rect.h },
-          },
-          video: { canvas_w: cw, canvas_h: ch, fps: state.cfg.fps, cursor: state.cfg.cursor },
-          audio: { mode: audio.mode, sources: audio.sources },
-          output_dir: outDir,
-          _ui_label: `区域 ${rt.rect.w}×${rt.rect.h}`,
-          _ui_track_labels: audio.labels,
-        });
-      }
-      // 前端预检：任何一路音源为空都会被后端拒绝（批次全成功或回滚），提前拦截并说明
-      const empty = routeCfgs.filter((c) => c.audio.sources.length === 0);
-      if (empty.length) {
-        toast('warn', `${empty.map((c) => c._ui_label).join('、')} 没有任何音源：显示器目标请勾选该屏输出端点，或系统音频/麦克风；区域隔离请选择至少一个应用（不静默录制）`);
-        state.starting = false;
-        renderStartBar();
-        return;
-      }
-      const { route_ids } = await api.startRoutes(routeCfgs);
-      route_ids.forEach((id, i) => registerRoute(id, {
-        kind: 'video',
-        label: routeCfgs[i]._ui_label,
-        icon: routeCfgs[i].target.kind === 'window' ? ICONS.window : ICONS.monitor,
-        trackLabels: routeCfgs[i]._ui_track_labels,
-      }));
-      state.selected.clear();
-      state.regionTarget = null;
-      state.regionRequestId = null;
-      toast('ok', `已开始 ${route_ids.length} 路录制`);
-    } else {
-      const s = state.audioOnly;
-      const sources = [];
-      const labels = [];
-      if (s.srcSystem) { sources.push({ kind: 'system' }); labels.push('系统音频'); }
-      if (s.srcMic && state.settings?.mic_device) { sources.push({ kind: 'mic', device_id: state.settings.mic_device }); labels.push('麦克风'); }
-      for (const pid of s.srcApps) {
-        const a = state.audioSources.find((x) => x.pid === pid);
-        if (a) { sources.push({ kind: 'app', pid: a.pid, created_at_unix_ms: a.created_at_unix_ms ?? 0 }); labels.push(`应用 · ${a.app_name}`); }
-      }
-      const outDir = s.outputDir.trim() || state.settings.output_dir;
-      // 后端契约：一次调用 N 源 → N 个共享 handle 的 route id（任一停止即整组停止）
-      const { route_ids } = await api.startAudioOnly([{ sources, output_dir: outDir, _ui_track_labels: labels }]);
-      route_ids.forEach((id, i) => registerRoute(id, {
-        kind: 'audio',
-        label: labels[i] ? `录音 · ${labels[i]}` : `录音 ${i + 1}`,
-        icon: ICONS.mic,
-        trackLabels: [labels[i] || `来源 ${i + 1}`],
-      }));
-      toast('ok', `已开始录音（${route_ids.length} 个来源）`);
-    }
-    renderLeftPanel();
-  } catch (e) {
-    toast('err', `启动失败：${e}`);
-  }
-  state.starting = false;
-  renderStartBar();
-}
+// 启动执行已并入 doStart(plan)（M19b2/REQ-3：DTO 由 buildStartPlan 单一来源产出）。
 
 function registerRoute(id, meta) {
   const existing = state.routes.get(id);
@@ -1405,7 +1548,7 @@ function renderSettings() {
     </div>`;
 
   $('#btn-save-settings').addEventListener('click', async () => {
-    const next = {
+    const form = {
       output_dir: $('#set-outdir').value.trim(),
       fps: Number($('#set-fps').value),
       audio_sample_rate: Number($('#set-sr').value),
@@ -1420,8 +1563,13 @@ function renderSettings() {
     };
     const msg = $('#settings-msg');
     try {
-      await api.setSettings(next);
-      state.settings = next;
+      // REQ-4：在写队列内读取最新 Settings，保留表单未覆盖的字段（尤其 ack）。
+      await enqueueSettingsWrite(async () => {
+        const base = await api.getSettings();
+        const next = { ...base, ...form };
+        await api.setSettings(next);
+        state.settings = next;
+      });
       applySettingsDefaults();
       msg.textContent = '已保存';
       toast('ok', '设置已保存');
@@ -1604,6 +1752,8 @@ function renderRecovery() {
 // ---------------------------------------------------------------------------
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    // REQ-3：与开始按钮同一门禁；按住重复触发不算第二次确认。
+    if (e.repeat) return;
     if (state.view === 'record') $('#btn-start')?.click();
   } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r') {
     if (state.view === 'record') { e.preventDefault(); refreshTargets(); }
