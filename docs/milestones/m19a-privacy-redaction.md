@@ -3,8 +3,8 @@
 - 日期：2026-10-23
 - 基线：`027b73e`（合规文档提交后）
 - 范围：只做**默认文件名/manifest 脱敏 + Settings 开关**；托盘状态、开始前摘要、日志脱敏、About/许可证、CSP、浮窗、退出确认均未进入本切片。
-- 状态：**源码实现与 L1/UI/恢复 L2 回归通过；PRD/SDD 003 已 Approved（2026-10-23，plan review + 用户批准）；acceptor 复审待跑；未重建安装包。**
-- 规格：`docs/prd/003-privacy-naming-redaction.md`（Approved 2026-10-23）、`specs/003-privacy-naming-redaction.md`（Approved 2026-10-23）。实现提交 `d42f9c5` 先于批准记录；未回溯批准历史。
+- 状态：**源码/UI 验收 ACCEPTED（2026-10-23）；PRD 003 Approved、SDD 003 Implemented；未重建安装包。**
+- 规格：`docs/prd/003-privacy-naming-redaction.md`（Approved 2026-10-23）、`specs/003-privacy-naming-redaction.md`（Implemented 2026-10-23）。实现提交 `d42f9c5` 先于批准记录；未回溯批准历史；acceptor 证据含 `16389e5`。
 
 ## 1. 行为
 
@@ -36,7 +36,7 @@
 - `cargo test -p sr-itests --test recovery -- --ignored --nocapture --test-threads=1`：5/5 PASS（旧 API true 兼容、崩溃恢复、磁盘满、损坏成品、44.1k/96k）。
 - 未跑长同步/完整 GUI；未重建安装包。
 
-## 4. REQ 追溯（spec 003，Draft）
+## 4. REQ 追溯（spec 003，Implemented）
 
 | REQ | 变更/行为 | 测试/证据 |
 |---|---|---|

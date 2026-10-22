@@ -1,9 +1,10 @@
 # 003 - Screen_rec 隐私命名与 metadata 脱敏（SDD / M19a 变更请求）
 
-Status: Approved
+Status: Implemented
 Created: 2026-10-23
 Updated: 2026-10-23
 Approved: 2026-10-23（plan review APPROVED + 用户批准 AC-1..4 / REQ-1..5）
+Accepted: 2026-10-23（acceptor ACCEPTED：d42f9c5 实现 + 16389e5 规格/报告；源码/UI 验收，不含安装包）
 PRD: `docs/prd/003-privacy-naming-redaction.md`（Approved 2026-10-23）
 实现基线：提交 `d42f9c5`（实现先于本批准记录；本文件是正式变更请求，不回溯批准历史）
 
@@ -83,5 +84,5 @@ PRD: `docs/prd/003-privacy-naming-redaction.md`（Approved 2026-10-23）
 
 - plan review 于 2026-10-23 返回 APPROVED；用户同日明确批准 AC-1..AC-4 / REQ-1..5；本规格状态 `Approved`。
 - 实现提交 `d42f9c5` 先于批准记录存在，已如实记录；不得倒填历史。
-- 下一步：acceptor 对 `d42f9c5` 与本规格复审；ACCEPTED 后状态可改 `Implemented`。
+- acceptor 于 2026-10-23 对 `d42f9c5` + `16389e5` 复审 **ACCEPTED**（源码/UI；安装包、真实 Tauri、长媒体未验证）；本规格状态 `Implemented`。
 - 批准日期使用实际日期，未回溯填写。
