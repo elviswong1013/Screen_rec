@@ -3,14 +3,15 @@
 - 日期：2026-10-23
 - 基线：`027b73e`（合规文档提交后）
 - 范围：只做**默认文件名/manifest 脱敏 + Settings 开关**；托盘状态、开始前摘要、日志脱敏、About/许可证、CSP、浮窗、退出确认均未进入本切片。
-- 状态：**源码实现与 L1/UI/恢复 L2 回归通过；未重建安装包；未提交验收结论。**
+- 状态：**源码实现与 L1/UI/恢复 L2 回归通过；PRD/SDD 003 已 Approved（2026-10-23，plan review + 用户批准）；acceptor 复审待跑；未重建安装包。**
+- 规格：`docs/prd/003-privacy-naming-redaction.md`（Approved 2026-10-23）、`specs/003-privacy-naming-redaction.md`（Approved 2026-10-23）。实现提交 `d42f9c5` 先于批准记录；未回溯批准历史。
 
 ## 1. 行为
 
 - `Settings.include_window_title_in_filename` 默认 `false`；坏类型只降级本字段，不影响其他设置。
-- 窗口录制默认目标名 `Window {seq}`，不含窗口标题；成品文件名与 manifest `identity.name` 使用同一通用名。
-- 设置 `true` 时回退旧行为：窗口标题经 `sanitize_target_name` 进入成品名与 manifest。
-- 崩溃恢复默认成品名 `{timestamp}_recovered-{route_id}`，不把旧 manifest 的窗口标题带入新成品名；`true` 时保留旧行为。
+- 窗口录制默认目标名 `Window {seq}`，不含窗口标题；成品文件名使用 `sanitize(target_name)`，manifest `identity.name` 保存**未 sanitize 的 `target_name`**（false 为通用名）。
+- 设置 `true` 时回退旧行为：成品文件名使用 sanitize 后的窗口标题；manifest 保存原样标题（不做 sanitize）。
+- 崩溃恢复默认成品名 `{timestamp}_recovered-{route_id}`，只用于**需要新生成的非 WAV 成品**；已有有效 `final_path` 原样复用（即使名称含标题），旧 manifest 的 `identity.name` 不追溯脱敏；`true` 时保留旧恢复命名。
 - 旧 v1 manifest 解析字段未改，含标题的旧会话仍可扫描/收尾/幂等复用；旧成品文件不改名。
 - 设置页新增「成品文件名包含窗口标题」复选框，默认关闭；mock 设置默认 false 且保存合并保留其他字段。
 
@@ -35,7 +36,17 @@
 - `cargo test -p sr-itests --test recovery -- --ignored --nocapture --test-threads=1`：5/5 PASS（旧 API true 兼容、崩溃恢复、磁盘满、损坏成品、44.1k/96k）。
 - 未跑长同步/完整 GUI；未重建安装包。
 
-## 4. 仍待后续
+## 4. REQ 追溯（spec 003，Draft）
+
+| REQ | 变更/行为 | 测试/证据 |
+|---|---|---|
+| REQ-1（AC-1） | `naming::output_target_name`；窗口默认 `Window {seq}`；true 回退标题；成品名 sanitize / manifest 原样 target_name；`commands.rs` 启动设置传递 | `output_target_name_false_omits_window_title`、`..._true_keeps_window_title`、`..._false_seq_differs`；`route.rs` Window 分支源码 |
+| REQ-2（AC-1/2） | Settings 字段默认 false/容错；设置页复选框；mock 默认 false | settings 4 个 `unit_settings_include_window_title_*` 测试；`settings-sample-rate.mjs` 50 项 |
+| REQ-3（AC-3） | manifest `identity.name` 原样 target_name；恢复 stem `recovered-{route_id}`；新恢复入口 | `recovery_output_stem_default...`、`recovery_output_stem_true...`；`unit_commands_recovery_settings_snapshot_once` |
+| REQ-4（AC-3/4） | v1 manifest 字段不变；旧 API true；旧文件不改名；已有 final_path 复用 | `recovery_old_v1_manifest_with_title_identity_still_parses`；recovery L2 5/5（旧 API true，非 false 命令路径） |
+| REQ-5（AC-4） | 仅测试/报告，无额外生产变更 | `cargo test --workspace`；UI runner；恢复 L2；`open-items.md` OI-08、`release-checklist.md` G2-03 状态 |
+
+## 5. 仍待后续
 
 - 旧会话恢复列表仍可能显示旧 manifest 的窗口标题（本切片只保证新成品名/新 manifest 与恢复成品名）。
 - 托盘持续指示、开始前摘要/告知、日志脱敏、About/许可证入口、CSP/IPC、浮窗、退出确认。
