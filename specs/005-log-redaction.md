@@ -156,7 +156,7 @@ sr-pipeline / sr-merge / src-tauri
 ## 8. 批准与状态
 
 - Status: Approved（2026-10-23 用户批准；外部 plan-reviewer/oracle 因 ECONNREFUSED 不可用，按本地自审方案 + 用户批准）。
-- 实现：`8078486`（sr-core 原语）+ `a1691b4`（边界接入）；`cargo fmt --all -- --check`、workspace 非 ignored 测试、L2 recovery 5/5 通过。
-- **独立 acceptor 两次返回 403，未取得 ACCEPTED/REJECTED；本规格未标 `Implemented`。**
-- 已知偏差：`sr-pipeline` 在错误构造时已脱敏，`SR_DIAG_PATHS` 主要恢复 stderr；UI 绑定错误的 opt-in 语义需验收确认。
-- 未重建安装包、未做真实 stderr 重定向/长媒体验证。
+- 实现：`8078486`（sr-core 原语）、`a1691b4`（边界接入）、`43e3e10`（通用扫描/opt-in helper）、`d88efbe`（验收修复）；`cargo fmt --all -- --check`、workspace 非 ignored 测试、L2 recovery 5/5 通过。
+- **acceptor acc-15 首轮 REJECTED（4 项 P1/P2）；修复已提交，等待复审。本规格未标 `Implemented`。**
+- 已修复：pipeline 错误构造改用 `render_*`（opt-in 可恢复）、空格/引号/Debug 路径扫描、Debug commit 路径、settings reason 脱敏；隐私草案已同步默认脱敏/`SR_DIAG_PATHS`。
+- 残余：开启标题文件名时 basename 例外；未重建安装包、未做真实 stderr 重定向/长媒体验证。
