@@ -35,6 +35,10 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           设置
         </button>
+        <button class="nav-item" data-nav="about">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></svg>
+          关于
+        </button>
         <div class="nav-foot">
           <span class="env-badge" id="env-badge">…</span>
           <span id="nav-foot-os" class="muted"></span>
@@ -133,6 +137,18 @@
           <h2 class="view-title">设置</h2>
           <p class="view-desc">保存后立即生效；输出目录、分段时长等将用于之后开始的录制。</p>
           <div class="panel settings-grid" id="settings-panel"></div>
+        </section>
+
+        <!-- 关于视图（M19d1：版本/构建/已随包 FFmpeg 文档） -->
+        <section class="view" id="view-about">
+          <h2 class="view-title">关于</h2>
+          <p class="view-desc">版本、构建信息与随包 FFmpeg 许可/源码说明；不包含未审阅的第三方通知、EULA 或隐私条款。</p>
+          <div class="panel" id="about-meta"></div>
+          <div class="panel">
+            <div class="panel-title">FFmpeg 许可与构建文档</div>
+            <div id="about-docs"></div>
+            <pre id="about-doc-text" style="white-space:pre-wrap;word-break:break-word;max-height:420px;overflow:auto;font-size:12px;line-height:1.5;margin:12px 0 0;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;" hidden></pre>
+          </div>
         </section>
       </main>
     </div>

@@ -120,5 +120,7 @@ ui/api.js     getAppInfo(), readLegalDoc(id)
 
 ## 8. 批准与状态
 
-- Status: Draft；待 plan review 与用户批准 AC-1..AC-5 / REQ-1..5。
-- 未批准前不写生产代码；批准后 TDD 红→绿，acceptor 验收。
+- Status: Approved（2026-10-23 用户批准；外部 plan-reviewer/oracle 不可用，按本地自审方案 + 用户批准）。
+- 实现：`src-tauri/src/legal.rs` + About 视图/API/runner；`cargo test -p screen-rec` 94 passed，workspace 全绿，About + 既有 4 个 UI runner 通过。
+- **独立 acceptor 通道仍不可用；本规格未标 `Implemented`。**
+- 未重建安装包、未做真实 Tauri 安装目录读取/GUI 手动签核。

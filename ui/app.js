@@ -68,6 +68,7 @@ function toast(kind, msg, path) {
 const state = {
   view: 'record',
   settings: null,
+  about: { info: null, loading: false, selected: null },
   endpointRates: {
     seq: 0,
     render: null,
@@ -143,6 +144,7 @@ $$('.nav-item').forEach((btn) => {
     if (state.view === 'merge') renderMerge();
     if (state.view === 'settings') renderSettings();
     if (state.view === 'screenshot') renderScreenshotView();
+    if (state.view === 'about') renderAbout();
     if (state.view === 'record') renderStartBar(); // 回到录制视图时按最新设置刷新摘要/复位确认
   });
 });
@@ -1585,6 +1587,58 @@ function renderSettings() {
   $('#set-sr').addEventListener('change', () => renderSampleRateNote());
   $('#set-mic').addEventListener('change', () => refreshSampleRates());
   refreshSampleRates();
+}
+
+/// M19d1：About 页（版本/系统/FFmpeg 构建 + 固定 allowlist 文档懒加载）。
+async function renderAbout() {
+  const meta = $('#about-meta');
+  const docs = $('#about-docs');
+  const pre = $('#about-doc-text');
+  if (!meta || !docs || !pre) return;
+
+  if (!state.about.info && !state.about.loading) {
+    state.about.loading = true;
+    meta.textContent = '加载中…';
+    try {
+      state.about.info = await api.getAppInfo();
+    } catch (e) {
+      meta.textContent = '读取关于信息失败';
+      state.about.loading = false;
+      return;
+    }
+    state.about.loading = false;
+  }
+  if (!state.about.info) return;
+  const info = state.about.info;
+  meta.innerHTML = `
+    <div class="hint">版本：${esc(info.version || 'unknown')}</div>
+    <div class="hint">Windows：${esc(state.caps?.os_build || '未知')}</div>
+    <div class="hint">FFmpeg：${esc(info.ffmpeg_build || 'unknown')}</div>
+    <div class="hint">本版本只展示已随包的 FFmpeg 文档；第三方通知、EULA、隐私条款不在本页。</div>`;
+  docs.innerHTML = (info.docs || []).map((d) => `
+    <div class="hint" style="margin:8px 0;">
+      <button class="btn-sm btn-ghost" data-about-doc="${esc(d.id)}">${esc(d.title)}</button>
+      <span class="muted" style="font-size:12px;margin-left:8px;">${esc(d.status)} · ${Number(d.bytes) || 0} B</span>
+    </div>`).join('');
+  $$('#about-docs [data-about-doc]').forEach((btn) => {
+    btn.addEventListener('click', () => loadAboutDoc(btn.dataset.aboutDoc, false));
+  });
+  if (state.about.selected) loadAboutDoc(state.about.selected, true);
+}
+
+async function loadAboutDoc(id, quiet) {
+  const pre = $('#about-doc-text');
+  if (!pre) return;
+  pre.hidden = false;
+  pre.textContent = '加载中…';
+  try {
+    const doc = await api.readLegalDoc(id);
+    pre.textContent = doc.text;
+    state.about.selected = id;
+  } catch (e) {
+    pre.textContent = '文档不可用';
+    if (!quiet) toast('err', '读取文档失败');
+  }
 }
 
 /// 原生率展示（REQ-2）：渲染端点 / 麦克风 = 设备混音率；进程环回如实标注

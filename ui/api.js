@@ -133,6 +133,8 @@ function makeReal() {
     discardSession: (sessionId) => invoke('discard_session', { sessionId }),
     getSettings: () => invoke('get_settings'),
     setSettings: (settings) => invoke('set_settings', { settings }),
+    getAppInfo: () => invoke('get_app_info'),
+    readLegalDoc: (id) => invoke('read_legal_doc', { id }),
     // M11-B 区域截图覆盖层契约（REQ-8；窗口生命周期与几何由后端管理，
     // 名称固定：get_overlay_geometry / open_region_overlay / close_region_overlay）。
     /**
@@ -368,8 +370,26 @@ function makeMock() {
     };
   };
 
+  const legalDocs = [
+    { id: 'ffmpeg_license', title: 'FFmpeg LGPLv3 许可证', status: 'shipped', bytes: 7651 },
+    { id: 'gplv3', title: 'GNU GPLv3 文本', status: 'shipped', bytes: 35147 },
+    { id: 'ffmpeg_source_offer', title: 'FFmpeg 对应源码说明', status: 'shipped', bytes: 4340 },
+    { id: 'ffmpeg_build_info', title: 'FFmpeg 构建信息', status: 'shipped', bytes: 1734 },
+    { id: 'ffmpeg_build_script', title: 'FFmpeg 构建脚本', status: 'shipped', bytes: 1536 },
+  ];
+
   return {
     async probeCapabilities() { await wait(250); return structuredClone(caps); },
+    async getAppInfo() {
+      await wait(80);
+      return { version: '0.1.0', ffmpeg_build: '46d899d7a02bc63237472cc4897258d5ddf274ac / 20261019', docs: structuredClone(legalDocs) };
+    },
+    async readLegalDoc(id) {
+      await wait(80);
+      const doc = legalDocs.find((d) => d.id === id);
+      if (!doc) throw 'invalid legal document';
+      return { id, text: `${doc.title}\n\n(mock license text)`, bytes: doc.bytes };
+    },
     async listTargets() {
       await wait(600);
       targetCalls++;

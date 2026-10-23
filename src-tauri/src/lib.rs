@@ -14,6 +14,7 @@
 //! recovery 维护）落实。
 
 pub mod commands;
+pub mod legal;
 pub mod region;
 pub mod settings;
 
@@ -410,6 +411,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             set_settings,
+            legal::get_app_info,
+            legal::read_legal_doc,
             // §3.3 枚举与能力探测
             commands::probe_capabilities,
             commands::list_targets,
