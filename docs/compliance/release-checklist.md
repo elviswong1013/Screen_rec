@@ -35,7 +35,7 @@
 - [~] **G1-08 隐私政策**：草案已整理（本地处理、落盘、保留/清理、共享/跨境、安全限制、儿童/敏感信息）；**尚缺**律师审阅、主体/联系方式/代表/DPO、网站/支持/支付场景、发布位置与版本一致性。证据：[privacy-policy-draft.md](privacy-policy-draft.md)。owner：`[待填：法务/隐私]`。
 - [~] **G1-09 录制使用指南**：草案已整理（告知/同意、员工/会议、著作权/DRM、中国/美国/EU 高层提示）；**尚缺**律师审阅、企业版模板/DPA、海外本地化。证据：[recording-usage-guidelines.md](recording-usage-guidelines.md)。owner：`[待填：法务/客服]`。
 - [ ] **G1-10 发行说明与已知问题**：面向用户的版本说明、已知限制（BLOCKED 项、编码器/播放器兼容性、无自动更新、未签名）。证据：`[待生成]`。owner：`[待填：产品]`。
-- [ ] **G1-11 About/版本/许可证入口**：应用内 About 页展示版本、EULA、隐私政策、第三方通知、源码 offer 链接/路径。当前 UI 未发现 About/许可证入口。证据：`ui/`、`src-tauri/src/lib.rs` 检索；`[待生成：UI 设计]`。owner：`[待填：前端/产品]`。
+- [~] **G1-11 About/版本/许可证入口**：M19d1 已实现 About 导航、版本/系统/FFmpeg 构建与 5 个已随包 FFmpeg 文档；notices/SBOM/EULA/隐私未接入，独立 acceptor 未签。证据：[m19d-report.md](../milestones/m19d-report.md)、[legal.rs](../../src-tauri/src/legal.rs)。owner：`[待填：前端/产品]`。
 - [ ] **G1-12 中英文版本一致性**：如面向海外，EULA/隐私/指南需有英文版并保持实质一致；语言优先级明确。证据：`[待生成]`。owner：`[待填：法务/本地化]`。
 - [ ] **G1-13 目标市场清单**：明确首发/暂缓国家/地区；逐市场确认隐私、劳动、著作权、消费者、出口/制裁要求。证据：`[待生成：市场清单]`。owner：`[待填：商务/法务]`。
 - [ ] **G1-14 名称/商标检索**：`Screen_rec`/`ScreenRec` 描述性强，需做商标/商号/域名/应用商店 knockout/clearance。证据：`[待生成：检索报告]`。owner：`[待填：法务/IP]`。
