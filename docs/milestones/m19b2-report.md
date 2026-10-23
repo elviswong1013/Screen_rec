@@ -2,9 +2,9 @@
 
 - 日期：2026-10-23
 - 基线：`e7df398`（M19b1 托盘/关闭提示提交后）
-- 规格：`specs/004-recording-visibility.md`（Approved）REQ-3/4
-- 状态：**源码/UI/自动化验证完成，待编排者/acceptor；真实 Tauri 与 L3 人工未执行。** SDD 004 仍为 `Approved`（b1+b2 均完成并经 acceptor ACCEPTED 后才可标 `Implemented`）。
-- 未提交、未打包；未改录制/同步/恢复/托盘语义。
+- 规格：`specs/004-recording-visibility.md`（Implemented）REQ-3/4
+- 状态：**源码/UI/自动化通过，acceptor ACCEPTED；L3 2026-10-23 用户签核「目前一切正常」。** SDD 004 已标 `Implemented`。
+- 实现提交 `d5c3d70`；两击绕过修复 `3a190a4`。L3 使用后续内部测试包，未签名；未改录制/同步/恢复语义。
 
 ## 1. 实现行为
 
@@ -52,24 +52,26 @@
 - `node tools/ui/audio-sources-builder.mjs`：全部通过。
 - `node tools/ui/region-record.mjs`：全部通过（mock-only；真实 GUI 由 E2E）。
 - `node tools/ui/settings-sample-rate.mjs`：全部通过。
-- 未跑长媒体/GUI/安装包；L3 未执行。
+- 未跑长媒体；L3 已签核；安装包为内部测试、未签名。
 
-## 5. 未验证 / L3
+## 5. L3 人工项（2026-10-23 已签核）
+
+以下 1–5 已由用户现场执行并反馈「目前一切正常」；未单独覆盖多路/混合状态与长媒体。
 
 1. 真实主窗开始：含麦克风/系统/端点 → 首次展开告知、二次确认；仅应用一次启动。
 2. 勾选/取消“不再显示”，重启应用后 ack 保持；设置页保存其他字段后 ack 不丢。
 3. 区域 overlay 确认后仍需开始确认；纯录音 WAV 摘要。
-4. 真实 Tauri `get_settings/set_settings` 往返（本次仅 Rust 单测 + mock UI）。
-5. L3 真实托盘/关闭提示（b1）仍未签；两批 L3 均需人工证据。
+4. 真实 Tauri `get_settings/set_settings` 往返（由用户重启/设置页操作覆盖）。
+5. L3 真实托盘/关闭提示（b1）已签核；两批 L3 均有现场证据。
 
 ## 6. 范围
 
 - 本切片不含托盘状态（b1 已完成）、浮窗/红点、托盘开始确认、退出确认、日志/About/CSP、安装包/签名。
-- SDD 004 不因本批自动化完成而标 `Implemented`；需 b1+b2 L3 与 acceptor。
+- SDD 004 已因 b1+b2 acceptor ACCEPTED + L3 签核标 `Implemented`；正式发行仍未完成。
 
 ## 7. 验收修正（acceptor 回归）
 
 - 首次 acceptor 复现：手动点击「摘要」会直接进入确认态，随后第一次点「开始」即调用启动 API，违反 REQ-3「第一次点开始只展开、不启动」。
 - 修复：`startConfirm` 拆为 `idle` / `summary`（手动摘要）/ `confirmed`（第一次开始）；手动摘要只展示内容，第一次开始只转 `confirmed` 并返回，第二次且签名匹配才启动；配置变化/收起/取消仍复位。
 - 新增 `recording-visibility.mjs` 2b 回归：手动摘要不启动、第一次开始不启动且按钮变「确认并开始」、第二次开始恰好一次；旧实现反证失败，新实现全部通过。
-- 复审：acceptor **ACCEPTED（source/UI only）**；L3 真实托盘/关闭/告知与真实 IPC 持久化仍未签，SDD 004 保持 `Approved`。
+- 复审：acceptor **ACCEPTED（source/UI only）**；L3 真实托盘/关闭/告知及真实 IPC 持久化已于 2026-10-23 用户签核「目前一切正常」，SDD 004 已标 `Implemented`（见 `m19b-l3-signoff.md`）。

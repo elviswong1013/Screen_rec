@@ -2,9 +2,9 @@
 
 - 日期：2026-10-23
 - 基线：`748b5ca`（PRD/SDD 004 批准后）
-- 规格：`docs/prd/004-recording-visibility.md`（Approved）、`specs/004-recording-visibility.md`（Approved）；本切片只实现 **REQ-1/2**，REQ-3/4（开始栏摘要/告知/ack）未进入本批。
-- 状态：**源码与自动化验证完成，待编排者/acceptor；L3 真实托盘/关闭交互未执行。** SDD 004 仍为 `Approved`（两批完成并经 acceptor ACCEPTED 后才可标 `Implemented`）。
-- 未提交、未打包；未改 UI、安装包、录制/编码/同步/恢复语义。
+- 规格：`docs/prd/004-recording-visibility.md`（Approved）、`specs/004-recording-visibility.md`（Implemented）；本切片实现 **REQ-1/2**，REQ-3/4 由 M19b2 实现。
+- 状态：**源码/自动化通过，acceptor ACCEPTED；L3 2026-10-23 用户签核「目前一切正常」。** SDD 004 已标 `Implemented`。
+- 实现提交 `e7df398`；L3 使用后续内部测试包，未签名；未改 UI、录制/编码/同步/恢复语义。
 
 ## 1. 实现行为
 
@@ -75,9 +75,9 @@
 | `unit_route_counts_excludes_terminal_states` | finalized/failed 排除 |
 | `unit_route_counts_unknown_non_terminal_is_conservatively_recording` | 未知非终态归 recording |
 
-## 5. 未验证 / L3 人工步骤
+## 5. L3 人工步骤（2026-10-23 已签核）
 
-未执行（不跑长媒体/GUI；本切片无 UI 变更）：
+以下步骤已由用户现场执行并反馈「目前一切正常」；未单独覆盖多路/混合状态：
 
 1. 启动应用，确认空闲时托盘 tooltip 为 `Screen_rec`、菜单「开始」可用/「停止」禁用、主窗标题 `Screen_rec`。
 2. 开始一路/多路录制，悬停托盘确认 tooltip 路数与 `● 录制中` 标题；确认「开始」禁用、「停止」可用。
@@ -88,6 +88,6 @@
 
 ## 6. 范围与后续
 
-- 本批不含 REQ-3/4：开始栏摘要、首次告知、`recording_notice_ack`、UI runner；SDD 004 不标 Implemented。
-- 未改 `ui/`、`tools/`、`specs/`、录制管线；未重建安装包/签名。
-- 本报告为工程证据，不代表 L3 交互已签核。
+- 本批不含 REQ-3/4（由 M19b2 实现）；SDD 004 已标 Implemented。
+- 未改 `ui/`、`tools/`、`specs/`、录制管线；未重建正式安装包/签名。
+- L3 已于 2026-10-23 签核，见 `m19b-l3-signoff.md`；本报告不替代正式发行验收。

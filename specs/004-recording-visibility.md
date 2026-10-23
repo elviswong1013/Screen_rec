@@ -1,11 +1,11 @@
 # 004 - Screen_rec 录制状态可查询与开始前告知（SDD / M19b）
 
-Status: Approved
+Status: Implemented
 Created: 2026-10-23
 Updated: 2026-10-23
 Approved: 2026-10-23（plan review APPROVED + 用户批准 AC-1..4 / REQ-1..5）
 PRD: `docs/prd/004-recording-visibility.md`（Approved 2026-10-23）
-实现基线：待实现（M19b1 先行；M19b2 随后）
+实现基线：M19b1 `e7df398` + M19b2 `d5c3d70` + 两击修复 `3a190a4`；L3 2026-10-23 用户签核
 
 ## 1. 范围
 
@@ -45,8 +45,9 @@ M19b 只做：托盘/主窗状态查询、录制中关闭主窗一次提示、�
   - 音源包含 mic/system/render_endpoint → needs_notice=true；仅 app 音源 → false；
   - 零音源仍走既有拒绝，不新增纯画面路径；
   - 纯录音显示 WAV，不显示画布/帧率；区域显示最终选区尺寸。
-- 确认状态机（会话内存）：`Idle -> Expanded(plan) -> Starting`；仅当 needs_notice && !recording_notice_ack：
-  - 第一次点“开始”只展开并显示告知，不调用启动 API；
+- 确认状态机（会话内存）：`Idle -> Summary(手动摘要) / Confirmed(第一次开始) -> Starting`；仅当 needs_notice && !recording_notice_ack：
+  - 手动摘要只展示内容，不视为第一次开始；
+  - 第一次点“开始”只进入 Confirmed 并显示告知，不调用启动 API；
   - 第二次点“确认并开始”才启动；
   - 目标/音源/输出/格式变化、取消、启动失败/完成均复位到 Idle；每次新启动尝试都需重新确认。
 - 仅 app 音源或 ack=true：一次点击启动；摘要仍可展开。
@@ -97,6 +98,7 @@ M19b 只做：托盘/主窗状态查询、录制中关闭主窗一次提示、�
 
 ## 6. 批准与状态
 
-- plan review 于 2026-10-23 APPROVED；用户同日批准 AC-1..AC-4 / REQ-1..5；本规格状态 `Approved`。
-- 实现按 TDD 红→绿，M19b1（REQ-1/2）与 M19b2（REQ-3/4）分批验收；两批均完成并经 acceptor ACCEPTED 后才可 `Implemented`。
-- 进度（2026-10-23）：M19b1 REQ-1/2 与 M19b2 REQ-3/4 源码/纯函数/Rust/四 UI runner 完成；真实 Tauri、托盘/关闭/告知 L3 待签；两批均未标 Implemented。
+- plan review 于 2026-10-23 APPROVED；用户同日批准 AC-1..AC-4 / REQ-1..5。
+- 实现按 TDD 红→绿，M19b1（REQ-1/2）与 M19b2（REQ-3/4）分批验收；两批源码/UI 均经 acceptor ACCEPTED；手动摘要绕过两击的问题由 acceptor 复现并修复（`3a190a4`）。
+- 本规格状态 `Implemented`（2026-10-23）：L3 真实托盘/关闭/开始告知由用户签核「目前一切正常」，证据见 `docs/milestones/m19b-l3-signoff.md`。
+- 安装包为内部测试、未签名；浮窗/图标、托盘开始告知、旧会话 UI、日志/About/CSP、正式发行清权仍不在本规格。

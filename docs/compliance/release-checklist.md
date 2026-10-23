@@ -45,8 +45,8 @@
 
 ## G2 产品措施（隐私/安全/知情）
 
-- [~] **G2-01 持续录制指示**：M19b1 已实现托盘 tooltip/菜单/主窗标题按 route id 反映 recording/stopping，录制中首次关闭主窗有一次提示。**仍缺**常驻可见的浮窗/图标；L3 真实托盘/关闭未签。证据：[m19b1-report.md](../milestones/m19b1-report.md)、[lib.rs](../../src-tauri/src/lib.rs)。owner：`[待填：产品/前端]`。
-- [~] **G2-02 开始前目标/音源摘要与第三方提示**：M19b2 已实现开始栏摘要（目标/音源/输出/格式）、敏感音源（mic/system/render_endpoint）首次两击告知、ack 勾选/取消与设置页保留；UI runner/四 runner 通过。**仍缺**真实 Tauri/L3 人工签核；托盘“开始”路径不在本切片告知范围。证据：[m19b2-report.md](../milestones/m19b2-report.md)、[lib.rs](../../src-tauri/src/lib.rs)。owner：`[待填：产品/前端]`。
+- [~] **G2-01 持续录制指示**：M19b1 已实现托盘 tooltip/菜单/主窗标题按 route id 反映 recording/stopping，录制中首次关闭主窗有一次提示。**仍缺**常驻可见的浮窗/图标；L3 真实托盘/关闭已于 2026-10-23 签核。证据：[m19b1-report.md](../milestones/m19b1-report.md)、[lib.rs](../../src-tauri/src/lib.rs)。owner：`[待填：产品/前端]`。
+- [~] **G2-02 开始前目标/音源摘要与第三方提示**：M19b2 已实现开始栏摘要（目标/音源/输出/格式）、敏感音源（mic/system/render_endpoint）首次两击告知、ack 勾选/取消与设置页保留；UI runner/四 runner 通过。真实 Tauri/L3 已于 2026-10-23 签核；托盘“开始”路径不在本切片告知范围。证据：[m19b2-report.md](../milestones/m19b2-report.md)、[lib.rs](../../src-tauri/src/lib.rs)。owner：`[待填：产品/前端]`。
 - [~] **G2-03 文件名/manifest 脱敏**：默认 false（`Window {seq}`）已实现；manifest `identity.name` 与恢复成品名同步；设置开关 `include_window_title_in_filename` 可回退旧行为；旧 API true 兼容。**尚缺**旧会话 UI 标题显示脱敏、安装包重建。证据：[m19a-privacy-redaction.md](../milestones/m19a-privacy-redaction.md)、[privacy-policy-draft.md](privacy-policy-draft.md)。owner：`[待填：工程/产品]`。
 - [ ] **G2-04 日志脱敏**：错误串只保留 basename/哈希/`<redacted>`；避免完整路径、窗口标题、用户名。当前 stderr 可能含路径/标题。证据：[privacy-policy-draft.md](privacy-policy-draft.md)。owner：`[待填：工程]`。
 - [ ] **G2-05 保留/清理入口**：设置页显示 `.screenrec_tmp` 占用/未完成会话；提供一键清理；明确 `keep_segments` 是调试选项；失败/崩溃残留有提示。证据：`[待生成：设计/实现]`。owner：`[待填：产品/工程]`。
