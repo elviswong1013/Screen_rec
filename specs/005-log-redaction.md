@@ -155,5 +155,8 @@ sr-pipeline / sr-merge / src-tauri
 
 ## 8. 批准与状态
 
-- Status: Draft；待 plan review 与用户批准 AC-1..AC-6 / REQ-1..6。
-- 未批准前不写生产代码；批准后按 TDD 红→绿实现，acceptor 验收。
+- Status: Approved（2026-10-23 用户批准；外部 plan-reviewer/oracle 因 ECONNREFUSED 不可用，按本地自审方案 + 用户批准）。
+- 实现：`8078486`（sr-core 原语）+ `a1691b4`（边界接入）；`cargo fmt --all -- --check`、workspace 非 ignored 测试、L2 recovery 5/5 通过。
+- **独立 acceptor 两次返回 403，未取得 ACCEPTED/REJECTED；本规格未标 `Implemented`。**
+- 已知偏差：`sr-pipeline` 在错误构造时已脱敏，`SR_DIAG_PATHS` 主要恢复 stderr；UI 绑定错误的 opt-in 语义需验收确认。
+- 未重建安装包、未做真实 stderr 重定向/长媒体验证。
