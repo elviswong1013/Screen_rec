@@ -68,7 +68,10 @@ pub fn redact_text_known_paths(text: &str, known: &[&Path]) -> String {
         let replacement = redact_path(path);
         let display = path.to_string_lossy().into_owned();
         let forward = display.replace('\\', "/");
-        for needle in [display, forward] {
+        // Debug/JSON 转义形式（`C:\\Users\\...`）也必须命中，否则
+        // `CommitError::FinalExists` 的 Debug 输出会保留完整路径。
+        let debug_display = display.replace('\\', "\\\\");
+        for needle in [display, forward, debug_display] {
             if !needle.is_empty() && !needles.iter().any(|(n, _)| *n == needle) {
                 needles.push((needle, replacement.clone()));
             }
@@ -107,6 +110,160 @@ pub fn redact_text_known_paths(text: &str, known: &[&Path]) -> String {
     }
     out.push_str(&text[emitted_to..]);
     out
+}
+
+fn is_path_sep(c: char) -> bool {
+    c == '\\' || c == '/'
+}
+
+/// 路径起点：盘符 `C:\`/`C:/`，或 UNC/正斜杠 UNC。前一个字符不能是路径/单词字符，
+/// 避免把 `http://`、`fooC:\` 或路径内部片段误判为新路径。
+fn path_start(text: &str, i: usize) -> Option<Option<char>> {
+    let bytes = text.as_bytes();
+    if i >= bytes.len() {
+        return None;
+    }
+    let prev = if i == 0 {
+        None
+    } else {
+        text[..i].chars().next_back()
+    };
+    if let Some(p) = prev {
+        if p.is_ascii_alphanumeric() || is_path_sep(p) || p == ':' {
+            return None;
+        }
+    }
+    let quote = match prev {
+        Some('"') => Some('"'),
+        Some('\'') => Some('\''),
+        _ => None,
+    };
+    if i + 2 < bytes.len()
+        && bytes[i].is_ascii_alphabetic()
+        && bytes[i + 1] == b':'
+        && matches!(bytes[i + 2], b'\\' | b'/')
+    {
+        return Some(quote);
+    }
+    if i + 1 < bytes.len()
+        && ((bytes[i] == b'\\' && bytes[i + 1] == b'\\')
+            || (bytes[i] == b'/' && bytes[i + 1] == b'/'))
+    {
+        return Some(quote);
+    }
+    None
+}
+
+/// 路径终点：引号闭合、换行/`|`/`;`/`]`/`}`、`:`+空白，或紧邻空白的闭合括号/逗号。
+/// 空格/撇号/括号可留在路径内，以覆盖 `Alice Smith`、`Alice's`、`a (1).mkv`。
+fn path_end(text: &str, start: usize, quote: Option<char>) -> Option<usize> {
+    let mut end = start;
+    for (off, c) in text[start..].char_indices() {
+        let pos = start + off;
+        if pos == start {
+            end = pos + c.len_utf8();
+            continue;
+        }
+        if let Some(q) = quote {
+            if c == q {
+                return Some(pos);
+            }
+        }
+        if matches!(c, '\n' | '\r' | '|' | ';' | ']' | '}') {
+            return Some(pos);
+        }
+        if c == ':' {
+            let rest = &text[pos + c.len_utf8()..];
+            if rest.is_empty()
+                || rest
+                    .chars()
+                    .next()
+                    .map(|n| n.is_whitespace())
+                    .unwrap_or(true)
+            {
+                return Some(pos);
+            }
+        }
+        if c == '"' {
+            return Some(pos);
+        }
+        if matches!(c, ')' | ']' | '}' | ',' | ';') {
+            let rest = &text[pos + c.len_utf8()..];
+            if rest.is_empty()
+                || rest
+                    .chars()
+                    .next()
+                    .map(|n| n.is_whitespace() || n == '|')
+                    .unwrap_or(true)
+            {
+                return Some(pos);
+            }
+        }
+        end = pos + c.len_utf8();
+    }
+    Some(end)
+}
+
+/// 通用文本路径脱敏：识别盘符/UNC/正斜杠 UNC、引号内路径、含空格/撇号/括号的
+/// 文件名，以及 Debug 转义的双反斜杠。用于未知路径的错误串/stderr 尾部。
+///
+/// 这是尽力而为的文本扫描：路径边界依赖引号、换行、`|`、`;`、`]`、`}、
+/// `:`+空白，以及紧邻空白的闭合括号/逗号。路径后的普通英文单词可能被并入
+/// basename，但父目录/用户名仍会被移除。
+pub fn redact_text_paths(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if let Some(quote) = path_start(text, i) {
+            if let Some(end) = path_end(text, i, quote) {
+                if end > i {
+                    out.push_str(&text[last..i]);
+                    let raw = &text[i..end];
+                    // Debug/JSON 转义的双反斜杠归一化后再脱敏；普通路径保持不变。
+                    let normalized = raw.replace("\\\\", "\\");
+                    out.push_str(&redact_path(Path::new(&normalized)));
+                    last = end;
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        i += text[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// 运行期路径渲染：`SR_DIAG_PATHS=1` 时保留完整路径，否则 `redact_path`。
+pub fn render_path(path: &Path) -> String {
+    if paths_verbose() {
+        path.to_string_lossy().into_owned()
+    } else {
+        redact_path(path)
+    }
+}
+
+/// 运行期文本渲染：已知路径替换；verbose 时原样返回。
+pub fn render_text_known_paths(text: &str, known: &[&Path]) -> String {
+    if paths_verbose() {
+        text.to_string()
+    } else {
+        redact_text_known_paths(text, known)
+    }
+}
+
+/// 运行期通用文本渲染：verbose 时原样返回，否则 `redact_text_paths`。
+pub fn render_text_paths(text: &str) -> String {
+    if paths_verbose() {
+        text.to_string()
+    } else {
+        redact_text_paths(text)
+    }
 }
 
 /// 设备 ID 脱敏：默认错误/状态统一返回 `<device>`（不用于设备枚举 DTO，REQ-3）。
@@ -352,5 +509,81 @@ mod tests {
             attempted: vec![],
         };
         assert_eq!(redact_tool_error(&err), "无法定位 ffmpeg（已尝试：）");
+    }
+
+    #[test]
+    fn redact_text_paths_handles_spaces_apostrophes_parentheses() {
+        let out = redact_text_paths(
+            r"E_DISK_FULL: C:\Users\Alice Smith\Private\file.mkv: Permission denied",
+        );
+        assert!(!out.contains("Alice"), "{out}");
+        assert!(!out.contains("Private"), "{out}");
+        assert!(out.contains(r"<redacted>\file.mkv"), "{out}");
+        assert!(
+            out.contains("E_DISK_FULL") && out.contains("Permission denied"),
+            "{out}"
+        );
+
+        let out = redact_text_paths(r"C:\Users\Alice's Files\a (1).mkv: failed");
+        assert!(!out.contains("Alice"), "{out}");
+        assert!(out.contains(r"<redacted>\a (1).mkv"), "{out}");
+    }
+
+    #[test]
+    fn redact_text_paths_handles_quoted_unc_and_debug_paths() {
+        let out = redact_text_paths(
+            r#"failed: "C:\Users\Alice Smith\Private\file.mkv" (exit 1)"#,
+        );
+        assert!(!out.contains("Alice"), "{out}");
+        assert!(out.contains(r"<redacted>\file.mkv"), "{out}");
+        assert!(out.contains("exit 1"), "{out}");
+
+        let out = redact_text_paths(r"\\server\share\Alice\file.mkv: denied");
+        assert!(!out.contains("Alice"), "{out}");
+        assert!(out.contains(r"<redacted>\file.mkv"), "{out}");
+        assert!(out.contains("denied"), "{out}");
+
+        let out = redact_text_paths(
+            r#"CommitError { final_path: "C:\\Users\\Alice Smith\\Private\\file.mkv" }"#,
+        );
+        assert!(!out.contains("Alice"), "{out}");
+        assert!(out.contains(r"<redacted>\file.mkv"), "{out}");
+        assert!(out.contains("CommitError"), "{out}");
+    }
+
+    #[test]
+    fn redact_text_known_paths_handles_debug_variant() {
+        let known = PathBuf::from(r"C:\Users\Alice Smith\Private\file.mkv");
+        let text = r#"CommitError { final_path: "C:\\Users\\Alice Smith\\Private\\file.mkv" }"#;
+        let out = redact_text_known_paths(text, &[&known]);
+        assert!(!out.contains("Alice"), "{out}");
+        assert!(out.contains(r"<redacted>\file.mkv"), "{out}");
+    }
+
+    #[test]
+    fn render_helpers_honor_verbose() {
+        let _lock = SR_DIAG_PATHS_LOCK.lock().expect("SR_DIAG_PATHS 锁");
+        let _snapshot = EnvSnapshot::take();
+        let path = PathBuf::from(r"C:\Users\Alice Smith\Private\file.mkv");
+        let text = r"C:\Users\Alice Smith\Private\file.mkv: denied";
+
+        std::env::remove_var(SR_DIAG_PATHS_ENV);
+        assert_eq!(render_path(&path), r"<redacted>\file.mkv");
+        assert_eq!(render_text_paths(text), r"<redacted>\file.mkv: denied");
+        assert_eq!(
+            render_text_known_paths(text, &[&path]),
+            r"<redacted>\file.mkv: denied"
+        );
+
+        std::env::set_var(SR_DIAG_PATHS_ENV, "1");
+        assert_eq!(render_path(&path), path.to_string_lossy());
+        assert_eq!(render_text_paths(text), text);
+        assert_eq!(render_text_known_paths(text, &[&path]), text);
+    }
+
+    #[test]
+    fn redact_text_paths_preserves_non_paths() {
+        let text = "exit 3: permission denied; https://example.com/x";
+        assert_eq!(redact_text_paths(text), text);
     }
 }
