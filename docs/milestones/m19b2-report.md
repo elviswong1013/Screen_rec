@@ -66,3 +66,10 @@
 
 - 本切片不含托盘状态（b1 已完成）、浮窗/红点、托盘开始确认、退出确认、日志/About/CSP、安装包/签名。
 - SDD 004 不因本批自动化完成而标 `Implemented`；需 b1+b2 L3 与 acceptor。
+
+## 7. 验收修正（acceptor 回归）
+
+- 首次 acceptor 复现：手动点击「摘要」会直接进入确认态，随后第一次点「开始」即调用启动 API，违反 REQ-3「第一次点开始只展开、不启动」。
+- 修复：`startConfirm` 拆为 `idle` / `summary`（手动摘要）/ `confirmed`（第一次开始）；手动摘要只展示内容，第一次开始只转 `confirmed` 并返回，第二次且签名匹配才启动；配置变化/收起/取消仍复位。
+- 新增 `recording-visibility.mjs` 2b 回归：手动摘要不启动、第一次开始不启动且按钮变「确认并开始」、第二次开始恰好一次；旧实现反证失败，新实现全部通过。
+- 复审：acceptor **ACCEPTED（source/UI only）**；L3 真实托盘/关闭/告知与真实 IPC 持久化仍未签，SDD 004 保持 `Approved`。

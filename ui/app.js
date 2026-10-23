@@ -109,8 +109,8 @@ const state = {
   recovery: [],              // 未收尾会话
   recentFiles: [],
   starting: false,
-  // M19b2/REQ-3 开始确认状态机（会话内存）：Idle -> Expanded(plan) -> Starting。
-  // Starting 由 state.starting 表达；每次新启动尝试（配置变化/取消/成败后）复位 Idle。
+  // M19b2/REQ-3 开始确认状态机（会话内存）：Idle -> Summary(手动摘要) / Confirmed(第一次开始) -> Starting。
+  // Summary 只展示摘要，不算开始确认；Starting 由 state.starting 表达；配置变化/取消/成败后复位 Idle。
   startConfirm: { phase: 'idle', signature: null },
 };
 
@@ -654,22 +654,23 @@ function renderStartBar() {
   const bar = $('#start-bar');
   bar.style.flexWrap = 'wrap'; // 展开摘要面板占整行（inline，不改 styles.css）
   const plan = buildStartPlan();
-  // REQ-3：目标/音源/输出/格式任何变化 → 展开态复位到 Idle，下次启动需重新确认。
-  if (state.startConfirm.phase === 'expanded' && state.startConfirm.signature !== plan.signature) {
+  // REQ-3：目标/音源/输出/格式任何变化 → 摘要/确认态复位到 Idle，下次启动需重新确认。
+  if (state.startConfirm.phase !== 'idle' && state.startConfirm.signature !== plan.signature) {
     state.startConfirm = { phase: 'idle', signature: null };
   }
-  const expanded = state.startConfirm.phase === 'expanded';
+  const planOpen = state.startConfirm.phase !== 'idle';
+  const confirmed = state.startConfirm.phase === 'confirmed';
   const ack = state.settings?.recording_notice_ack === true;
-  const confirmPending = expanded && plan.needs_notice && !ack;
+  const confirmPending = confirmed && plan.needs_notice && !ack;
   const label = state.starting
     ? '<span class="spin"></span> 启动中…'
     : confirmPending ? '确认并开始' : plan.buttonLabel;
   bar.innerHTML = `
     <span class="summary">${plan.summary}</span>
-    <button class="btn-sm btn-ghost" id="btn-start-detail" ${plan.canExpand || expanded ? '' : 'disabled'}>${expanded ? '收起摘要' : '摘要'}</button>
+    <button class="btn-sm btn-ghost" id="btn-start-detail" ${plan.canExpand || planOpen ? '' : 'disabled'}>${planOpen ? '收起摘要' : '摘要'}</button>
     <span class="muted" style="font-size:12px;">Ctrl+Enter</span>
     <button class="${state.recordMode === 'screen' ? 'btn-rec' : 'btn-primary'}" id="btn-start" ${plan.canStart && !state.starting ? '' : 'disabled'}>${label}</button>
-    ${expanded ? `
+    ${planOpen ? `
       <div id="start-plan" style="flex-basis:100%;border-top:1px solid var(--border);padding-top:8px;">
         ${plan.detail.map((d) => `<div class="hint">${esc(d)}</div>`).join('')}
         ${plan.needs_notice ? `
@@ -685,10 +686,10 @@ function renderStartBar() {
       </div>` : ''}`;
   $('#btn-start').addEventListener('click', onStartClick);
   $('#btn-start-detail').addEventListener('click', () => {
-    // 摘要手动展开/收起（不启动）；收起即复位 Idle。
-    state.startConfirm = expanded
+    // 手动摘要只展开内容，不算第一次开始确认；收起/再次点击复位 Idle。
+    state.startConfirm = planOpen
       ? { phase: 'idle', signature: null }
-      : { phase: 'expanded', signature: plan.signature };
+      : { phase: 'summary', signature: plan.signature };
     renderStartBar();
   });
   $('#btn-start-cancel')?.addEventListener('click', () => {
@@ -828,9 +829,9 @@ async function onStartClick() {
   if (!plan.canStart) return; // 按钮已禁用；仅作键盘/程序化兜底
   const ack = state.settings?.recording_notice_ack === true;
   if (plan.needs_notice && !ack) {
-    if (state.startConfirm.phase !== 'expanded' || state.startConfirm.signature !== plan.signature) {
-      // 首次（或展开后计划已变化）：仅展开告知，不启动。
-      state.startConfirm = { phase: 'expanded', signature: plan.signature };
+    if (state.startConfirm.phase !== 'confirmed' || state.startConfirm.signature !== plan.signature) {
+      // 首次开始，或手动摘要后的第一次开始：只展开告知，不启动。
+      state.startConfirm = { phase: 'confirmed', signature: plan.signature };
       renderStartBar();
       return;
     }

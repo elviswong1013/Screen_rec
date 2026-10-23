@@ -350,6 +350,23 @@ try {
     check('mic：启动后复位', !(await planVisible(cdp)));
   }
 
+  // 2b) 手动展开摘要不得替代第一次开始确认（acceptor 回归）。
+  {
+    await selectWindow(cdp);
+    await setMicChecked(cdp, true);
+    const before = await startsLen(cdp);
+    await cdp.evaluate(`document.querySelector('#btn-start-detail').click()`);
+    await waitForInPage(cdp, `!!document.querySelector('#start-plan')`, 5000);
+    check('手动摘要：不启动', (await startsLen(cdp)) === before);
+    check('手动摘要：按钮仍为开始录制', (await startBtnText(cdp)) === '开始录制', await startBtnText(cdp));
+    await clickStart(cdp);
+    check('手动摘要后第一次开始：只确认不启动', (await startsLen(cdp)) === before);
+    check('手动摘要后第一次开始：按钮变为确认并开始', (await startBtnText(cdp)) === '确认并开始', await startBtnText(cdp));
+    await clickStart(cdp);
+    await waitForInPage(cdp, `window.__starts.length === ${before + 1}`, 5000);
+    check('手动摘要后第二次开始：启动', true);
+  }
+
   // 3) 取消不启动；再次点开始需重新确认。
   {
     await selectWindow(cdp);
