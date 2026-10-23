@@ -13,6 +13,9 @@ pub mod types {
 pub mod error;
 pub mod events;
 
+/// 边界层日志/错误脱敏原语（M19c REQ-1，specs/005-log-redaction.md）。
+pub mod redact;
+
 /// 运行时工具定位（M11-C P1-5：ffmpeg/ffprobe 安装后解析，不依赖开发机源码目录）。
 pub mod tools;
 
