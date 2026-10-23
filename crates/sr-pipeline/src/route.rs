@@ -33,6 +33,7 @@ use sr_capture::pipe::{
 };
 use sr_capture::region::{CaptureLossLatch, RegionCrop};
 use sr_capture::wgc::{self, LatestFrame, StreamControl, StreamStartError};
+use sr_core::redact::{redact_device_id, redact_path, redact_text_known_paths};
 
 use crate::naming::{format_timestamp, next_available, sanitize_target_name};
 use crate::sidecar::{
@@ -965,13 +966,31 @@ fn start_audio_stream(src: &ResolvedAudioSource) -> Result<StartedCapture, Captu
 
 /// 采集启动错误的路级映射（环回不可用 → `LoopbackUnavailable`〔L2 → BLOCKED〕；
 /// 其余 → `CaptureFailed`；`MicUnavailable` 的路级专用变体本红未钉，此处明确报错）。
-fn capture_start_error(e: CaptureError) -> RouteError {
+/// 上游明细中的原始端点 device_id 以 `<device>` 呈现（M19c REQ-3；麦克风友好名保留）。
+fn capture_start_error(e: CaptureError, src: &ResolvedAudioSource) -> RouteError {
+    let device_hint = match src {
+        ResolvedAudioSource::RenderEndpoint { device_id }
+        | ResolvedAudioSource::System { device_id } => Some(device_id.as_str()),
+        _ => None,
+    };
     match e {
-        CaptureError::LoopbackUnavailable { detail } => RouteError::LoopbackUnavailable { detail },
-        CaptureError::EndpointInvalid { detail } => RouteError::TargetInvalid { detail },
-        other => RouteError::CaptureFailed {
-            detail: format!("音频采集启动失败: {other:?}"),
+        CaptureError::LoopbackUnavailable { detail } => RouteError::LoopbackUnavailable {
+            detail: redact_device_in_detail(detail, device_hint),
         },
+        CaptureError::EndpointInvalid { detail } => RouteError::TargetInvalid {
+            detail: redact_device_in_detail(detail, device_hint),
+        },
+        other => RouteError::CaptureFailed {
+            detail: redact_device_in_detail(format!("音频采集启动失败: {other:?}"), device_hint),
+        },
+    }
+}
+
+/// 明细文本中的原始端点 ID → `<device>`（M19c REQ-3；无 hint 或友好名原样保留）。
+fn redact_device_in_detail(detail: String, device_id: Option<&str>) -> String {
+    match device_id {
+        Some(id) if !id.is_empty() => detail.replace(id, redact_device_id(id)),
+        _ => detail,
     }
 }
 
@@ -1118,7 +1137,7 @@ pub fn start_audio_only_with_options_and_rate(
     })?;
 
     std::fs::create_dir_all(&cfg.output_dir).map_err(|e| RouteError::StartFailed {
-        detail: format!("创建输出目录失败（{}）: {e}", cfg.output_dir.display()),
+        detail: format!("创建输出目录失败（{}）: {e}", redact_path(&cfg.output_dir)),
     })?;
 
     // P1-3：纯录音纳入恢复状态机——真实会话目录 + manifest（streams=["wav"]），
@@ -1175,7 +1194,7 @@ pub fn start_audio_only_with_options_and_rate(
                     s.stop();
                 }
                 let _ = std::fs::remove_dir_all(&session_dir);
-                return Err(capture_start_error(e));
+                return Err(capture_start_error(e, src));
             }
         }
     }
@@ -1195,7 +1214,7 @@ pub fn start_audio_only_with_options_and_rate(
                 }
                 let _ = std::fs::remove_dir_all(&session_dir);
                 return Err(RouteError::StartFailed {
-                    detail: format!("创建 WAV 失败（{}）: {e:?}", path.display()),
+                    detail: format!("创建 WAV 失败（{}）: {e:?}", redact_path(&path)),
                 });
             }
         }
@@ -1262,7 +1281,8 @@ pub fn start_audio_only_with_options_and_rate(
                         first_err.get_or_insert(detail);
                     }
                     Err(_) => {
-                        first_err.get_or_insert(format!("WAV 写线程 panic（{}）", path.display()));
+                        first_err
+                            .get_or_insert(format!("WAV 写线程 panic（{}）", redact_path(path)));
                     }
                 }
             }
@@ -1301,15 +1321,19 @@ fn commit_audio_only(
         if len > 44 {
             Ok(())
         } else {
-            Err(format!("WAV 校验失败（{}: {len} 字节）", path.display()))
+            Err(format!("WAV 校验失败（{}: {len} 字节）", redact_path(path)))
         }
     };
     let mut committed = Vec::with_capacity(wav_paths.len());
     for (i, src) in wav_paths.iter().enumerate() {
         let final_path = next_available(output_dir, &format!("{ts}_audio{i}"), "wav");
         crate::naming::safe_commit(src, &final_path, verify).map_err(|e| {
+            // CommitError::FinalExists 的 Debug 携带成品绝对路径：detail 在构造点脱敏。
             RouteError::FinalizeFailed {
-                detail: format!("WAV 安全提交失败: {e:?}"),
+                detail: redact_text_known_paths(
+                    &format!("WAV 安全提交失败: {e:?}"),
+                    &[src, &final_path],
+                ),
             }
         })?;
         committed.push(final_path);
@@ -1681,7 +1705,10 @@ fn resolve_region(
                     .is_some_and(|g| g.eq_ignore_ascii_case(key))
         })
         .ok_or_else(|| RouteError::TargetInvalid {
-            detail: format!("显示器不存在或已移除（display_device={key}）"),
+            detail: format!(
+                "显示器不存在或已移除（display_device={}）",
+                redact_device_id(key)
+            ),
         })?;
     let crop = region_crop_rect(
         rect,
@@ -1826,9 +1853,14 @@ fn start_route_impl(
     for src in &resolved_audio {
         if let ResolvedAudioSource::RenderEndpoint { device_id } = src {
             sr_audio::wasapi::validate_render_endpoint(device_id).map_err(|e| match e {
-                CaptureError::EndpointInvalid { detail } => RouteError::TargetInvalid { detail },
+                CaptureError::EndpointInvalid { detail } => RouteError::TargetInvalid {
+                    detail: redact_device_in_detail(detail, Some(device_id)),
+                },
                 other => RouteError::CaptureFailed {
-                    detail: format!("端点启动校验失败: {other:?}"),
+                    detail: redact_device_in_detail(
+                        format!("端点启动校验失败: {other:?}"),
+                        Some(device_id),
+                    ),
                 },
             })?;
         }
@@ -1838,7 +1870,7 @@ fn start_route_impl(
     //     段/ffconcat 清单落会话临时目录 <output>/.screenrec_tmp/<session_id>；
     //     会话开始时创建并写 manifest（原子；REQ-22 恢复锚点）。 ──
     std::fs::create_dir_all(&output_dir).map_err(|e| RouteError::StartFailed {
-        detail: format!("创建输出目录失败（{}）: {e}", output_dir.display()),
+        detail: format!("创建输出目录失败（{}）: {e}", redact_path(&output_dir)),
     })?;
     let token = sanitize_target_name(&target_name);
     let ts = format_timestamp(current_unix_ms(), local_utc_offset_minutes());
@@ -2108,7 +2140,7 @@ fn start_route_impl(
                 sender.stop();
                 pipe.close();
                 apipe.close();
-                return Err(capture_start_error(e));
+                return Err(capture_start_error(e, src));
             }
         };
         let capture_format = started.stream.capture_format();
@@ -2388,7 +2420,7 @@ fn handle_endpoint_loss(
     let endpoint = endpoint_watch
         .as_ref()
         .map(|(_, label)| label.clone())
-        .unwrap_or_else(|| device_id.to_string());
+        .unwrap_or_else(|| redact_device_id(device_id).to_string());
     shared.set_stop_notice(StopNotice {
         code: "E_TARGET_LOST".to_string(),
         endpoint: Some(endpoint),
@@ -2574,33 +2606,58 @@ fn sidecar_exit(ctx: &RunCtx, code: i32) -> RouteError {
         .lock()
         .map(|t| t.clone())
         .unwrap_or_default();
-    let lower = full.to_lowercase();
+    let send_error = ctx.shared.send_error.lock().ok().and_then(|e| e.clone());
+    // 已知路径：会话目录（段/清单/临时物均在其中）+ 收尾清单 + 预留成品名。
+    let known: Vec<&Path> = vec![
+        ctx.shared.session_dir.as_path(),
+        ctx.finalize_list.as_path(),
+        ctx.final_path.as_path(),
+    ];
+    sidecar_exit_error(code, &full, send_error.as_deref(), &known)
+}
+
+/// sidecar 退出归因（纯函数，可测）：**先**按原始 stderr 关键词分类
+/// （REQ-5：E_DISK_FULL 归因先于脱敏），**再**对展示用尾部按已知路径脱敏
+/// （M19c REQ-2/3；detail 为 UI/日志出口，默认不携带完整路径、不随 SR_DIAG_PATHS 变化）。
+fn sidecar_exit_error(
+    code: i32,
+    stderr_tail: &str,
+    send_error: Option<&str>,
+    known: &[&Path],
+) -> RouteError {
+    let lower = stderr_tail.to_lowercase();
     if lower.contains("permission denied")
         || lower.contains("no space left")
         || lower.contains("disk full")
         || lower.contains("not enough space")
     {
-        let tail3: String = full.lines().rev().take(3).collect::<Vec<_>>().join(" | ");
+        let tail3: String = stderr_tail
+            .lines()
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" | ");
         return RouteError::DiskFull {
-            detail: format!("输出写失败（exit {code}）；stderr 尾部: {tail3}"),
+            detail: format!(
+                "输出写失败（exit {code}）；stderr 尾部: {}",
+                redact_text_known_paths(&tail3, known)
+            ),
         };
     }
-    let tail = ctx
-        .shared
-        .stderr_tail
-        .lock()
-        .map(|t| t.lines().rev().take(3).collect::<Vec<_>>().join(" | "))
-        .unwrap_or_default();
-    let send_note = ctx
-        .shared
-        .send_error
-        .lock()
-        .ok()
-        .and_then(|e| e.clone())
+    let tail = stderr_tail
+        .lines()
+        .rev()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let send_note = send_error
         .map(|e| format!("；发送器: {e}"))
         .unwrap_or_default();
     RouteError::SidecarExit {
-        detail: format!("退出码 {code}；stderr 尾部: {tail}{send_note}"),
+        detail: format!(
+            "退出码 {code}；stderr 尾部: {}{send_note}",
+            redact_text_known_paths(&tail, known)
+        ),
     }
 }
 
@@ -2656,6 +2713,7 @@ impl FfmpegRunner {
         timeout: Duration,
         cancel: Option<&crate::finalize::FinalizeControl>,
         phase: Option<crate::finalize::FinalizeTestPhase>,
+        known: &[&Path],
     ) -> Result<(), String> {
         let mut child = spawn_sidecar(&args).map_err(|e| format!("spawn {what} 失败: {e}"))?;
         if let Some(phase) = phase {
@@ -2670,7 +2728,12 @@ impl FfmpegRunner {
             MediaWait::Exited(Some(0)) => Ok(()),
             MediaWait::Exited(code) => {
                 let tail = tail.lock().map(|t| t.clone()).unwrap_or_default();
-                Err(format!("{what} 退出码 {code:?}；stderr 尾部: {tail}"))
+                // stderr 尾部含 argv 中的段/清单/临时物绝对路径：detail 在构造点脱敏
+                //（M19c REQ-2/3；退出码与 ffmpeg 原因保留）。
+                Err(format!(
+                    "{what} 退出码 {code:?}；stderr 尾部: {}",
+                    redact_text_known_paths(&tail, known)
+                ))
             }
             MediaWait::Timeout => Err(format!("{what} 超时（{}s）", timeout.as_secs())),
             MediaWait::Cancelled => Err(format!("已取消（批量回滚），{what} 中止")),
@@ -2702,7 +2765,10 @@ impl crate::finalize::MediaRunner for FfmpegRunner {
             "matroska".into(),
             out.to_string_lossy().to_string(),
         ];
-        Self::run(args, "concat", FINALIZE_TIMEOUT, cancel, None)
+        // 清单/临时物/段均在会话目录内：会话目录前缀覆盖 + 两个显式路径兜底。
+        let session_dir = list.parent().unwrap_or(list);
+        let known: Vec<&Path> = vec![session_dir, list, out];
+        Self::run(args, "concat", FINALIZE_TIMEOUT, cancel, None, &known)
     }
 
     fn remux(
@@ -2711,12 +2777,15 @@ impl crate::finalize::MediaRunner for FfmpegRunner {
         out: &Path,
         cancel: Option<&crate::finalize::FinalizeControl>,
     ) -> Result<(), String> {
+        let session_dir = input.parent().unwrap_or(input);
+        let known: Vec<&Path> = vec![session_dir, input, out];
         Self::run(
             crate::finalize::build_remux_args(input, out),
             "remux",
             REMUX_TIMEOUT,
             cancel,
             Some(crate::finalize::FinalizeTestPhase::RemuxStarted),
+            &known,
         )
     }
 }
@@ -2796,7 +2865,7 @@ fn cleanup_session_after_finalize(session_dir: &Path, keep_segments: bool) {
     if let Err(e) = crate::recovery::discard_session(session_dir) {
         eprintln!(
             "[route] 成品验证成功，但清理原段失败（保留会话目录 {}）：{e:?}",
-            session_dir.display()
+            crate::sidecar::render_path_for_stderr(session_dir)
         );
     }
 }
@@ -3179,5 +3248,121 @@ mod tests {
                 device: "mic-1".into()
             }
         );
+    }
+
+    // ── M19c REQ-2/3/5：sidecar 退出归因（分类先于脱敏）+ 设备 ID 脱敏 ──
+
+    #[test]
+    fn unit_sidecar_exit_error_classifies_diskfull_before_redaction() {
+        let session = PathBuf::from(r"C:\Users\someone\Videos\out\.screenrec_tmp\sess-9");
+        let seg_line = format!("{}\\out0_00001.mkv: Permission denied", session.display());
+        let raw = format!("E:\nffmpeg exited\n{seg_line}");
+        let known = vec![session.as_path()];
+
+        let err = sidecar_exit_error(1, &raw, None, &known);
+        match &err {
+            RouteError::DiskFull { detail } => {
+                // REQ-5：E_DISK_FULL 关键词分类在原始 stderr 上完成并保留。
+                assert!(
+                    detail.contains("Permission denied"),
+                    "关键词保留（{detail}）"
+                );
+                assert!(detail.contains("exit 1"), "退出码保留（{detail}）");
+                // REQ-2：展示尾部已知路径脱敏——父目录/用户名不出现，会话后缀与
+                // 段 basename 保留。
+                assert!(!detail.contains(r"C:\Users\"), "父目录不得出现（{detail}）");
+                assert!(
+                    detail.contains(r".screenrec_tmp\sess-9"),
+                    "会话后缀保留（{detail}）"
+                );
+                assert!(
+                    detail.contains("out0_00001.mkv"),
+                    "段 basename 保留（{detail}）"
+                );
+            }
+            other => panic!("Permission denied 应归因 E_DISK_FULL（得到 {other:?}）"),
+        }
+    }
+
+    #[test]
+    fn unit_sidecar_exit_error_redacts_generic_tail() {
+        let session = PathBuf::from(r"C:\Users\someone\Videos\out\.screenrec_tmp\sess-9");
+        let raw = format!(
+            "Error opening output:\n{}\\out0_00000.mkv: Broken pipe",
+            session.display()
+        );
+        let known = vec![session.as_path()];
+
+        let err = sidecar_exit_error(-1, &raw, Some("Io error: \\\\.\\pipe\\screenrec"), &known);
+        match &err {
+            RouteError::SidecarExit { detail } => {
+                assert!(
+                    detail.contains("退出码 -1"),
+                    "错误类别/退出码保留（{detail}）"
+                );
+                assert!(
+                    detail.contains("Broken pipe"),
+                    "stderr 原因保留（{detail}）"
+                );
+                assert!(detail.contains("发送器"), "发送器诊断保留（{detail}）");
+                assert!(!detail.contains(r"C:\Users\"), "父目录不得出现（{detail}）");
+                assert!(
+                    detail.contains("out0_00000.mkv"),
+                    "段 basename 保留（{detail}）"
+                );
+            }
+            other => panic!("非磁盘满退出应归因 SidecarExit（得到 {other:?}）"),
+        }
+    }
+
+    #[test]
+    fn unit_capture_start_error_redacts_endpoint_ids_keeps_friendly_mic() {
+        let raw_id = "{0.0.0.00000000}.{AB12-CD34}";
+        let endpoint = ResolvedAudioSource::RenderEndpoint {
+            device_id: raw_id.to_string(),
+        };
+        let err = capture_start_error(
+            CaptureError::EndpointInvalid {
+                detail: format!("设备不是渲染端点（device_id={raw_id}）"),
+            },
+            &endpoint,
+        );
+        match &err {
+            RouteError::TargetInvalid { detail } => {
+                assert!(
+                    detail.contains("<device>"),
+                    "端点 ID 应为 <device>（{detail}）"
+                );
+                assert!(
+                    !detail.contains("AB12-CD34"),
+                    "原始 ID 不得出现（{detail}）"
+                );
+                assert!(
+                    detail.contains("E_TARGET_LOST") || detail.contains("device_id"),
+                    "错误类别语境保留（{detail}）"
+                );
+            }
+            other => panic!("端点失效应映射 TargetInvalid（得到 {other:?}）"),
+        }
+
+        // 麦克风：设备为用户选择的友好名，原样保留（REQ-3）。
+        let mic = ResolvedAudioSource::Mic {
+            device: "Microphone (Realtek Audio)".into(),
+        };
+        let err = capture_start_error(
+            CaptureError::MicUnavailable {
+                detail: "采集设备不存在/不可打开（Microphone (Realtek Audio)）".into(),
+            },
+            &mic,
+        );
+        match &err {
+            RouteError::CaptureFailed { detail } => {
+                assert!(
+                    detail.contains("Microphone (Realtek Audio)"),
+                    "友好名保留（{detail}）"
+                );
+            }
+            other => panic!("麦克风不可用应映射 CaptureFailed（得到 {other:?}）"),
+        }
     }
 }

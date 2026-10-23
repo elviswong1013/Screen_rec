@@ -34,6 +34,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
+use sr_core::redact::{redact_path, redact_text_known_paths, redact_tool_error};
+
 /// 单段视频/音频时间戳摘要（ffprobe 包扫描；秒）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SegmentTiming {
@@ -90,13 +92,13 @@ pub fn write_segment_list(
                 Some(d) => list.push_str(&format!("duration {d:.6}\n")),
                 None => eprintln!(
                     "[sr-pipeline] 段时间戳不可用，退回容器时长（{}）",
-                    seg.display()
+                    crate::sidecar::render_path_for_stderr(seg)
                 ),
             }
         }
     }
     std::fs::write(list_path, list)
-        .map_err(|e| format!("写收尾清单失败（{}）: {e}", list_path.display()))
+        .map_err(|e| format!("写收尾清单失败（{}）: {e}", redact_path(list_path)))
 }
 
 /// 成品校验（收尾提交与恢复幂等复用同一口径）：存在 + 非零 + ffprobe 可解析且
@@ -115,10 +117,10 @@ pub(crate) fn verify_final_media_with_expectation(
     expected: Option<MediaExpectation>,
 ) -> Result<(), String> {
     let len = std::fs::metadata(p)
-        .map_err(|e| format!("成品校验失败（{}：不存在或不可读：{e}）", p.display()))?
+        .map_err(|e| format!("成品校验失败（{}：不存在或不可读：{e}）", redact_path(p)))?
         .len();
     if len == 0 {
-        return Err(format!("成品校验失败（{}：0 字节）", p.display()));
+        return Err(format!("成品校验失败（{}：0 字节）", redact_path(p)));
     }
     let out = Command::new(ffprobe)
         .args([
@@ -131,7 +133,7 @@ pub(crate) fn verify_final_media_with_expectation(
         ])
         .arg(p)
         .output()
-        .map_err(|e| format!("成品校验失败（{}：ffprobe 启动失败：{e}）", p.display()))?;
+        .map_err(|e| format!("成品校验失败（{}：ffprobe 启动失败：{e}）", redact_path(p)))?;
     if !out.status.success() {
         let tail: String = String::from_utf8_lossy(&out.stderr)
             .lines()
@@ -139,21 +141,28 @@ pub(crate) fn verify_final_media_with_expectation(
             .take(3)
             .collect::<Vec<_>>()
             .join(" | ");
-        return Err(format!("成品校验失败（{}：不可解析：{tail}）", p.display()));
+        return Err(format!(
+            "成品校验失败（{}：不可解析：{}）",
+            redact_path(p),
+            redact_text_known_paths(&tail, &[p])
+        ));
     }
     let dur: f64 = String::from_utf8_lossy(&out.stdout)
         .trim()
         .parse()
         .unwrap_or(0.0);
     if !(dur > 0.0) {
-        return Err(format!("成品校验失败（{}：时长无效 {dur}）", p.display()));
+        return Err(format!(
+            "成品校验失败（{}：时长无效 {dur}）",
+            redact_path(p)
+        ));
     }
     if let Some(expected) = expected {
         let (video, audio) = probe_stream_counts(ffprobe, p)?;
         if video != expected.video || audio != expected.audio {
             return Err(format!(
                 "成品校验失败（{}：轨数不符：期望 v={} a={}，实际 v={video} a={audio}）",
-                p.display(),
+                redact_path(p),
                 expected.video,
                 expected.audio
             ));
@@ -175,12 +184,12 @@ fn probe_stream_counts(ffprobe: &Path, p: &Path) -> Result<(usize, usize), Strin
         ])
         .arg(p)
         .output()
-        .map_err(|e| format!("轨数校验失败（{}：ffprobe 启动失败：{e}）", p.display()))?;
+        .map_err(|e| format!("轨数校验失败（{}：ffprobe 启动失败：{e}）", redact_path(p)))?;
     if !out.status.success() {
         return Err(format!(
             "轨数校验失败（{}：{}）",
-            p.display(),
-            String::from_utf8_lossy(&out.stderr)
+            redact_path(p),
+            redact_text_known_paths(&String::from_utf8_lossy(&out.stderr), &[p])
         ));
     }
     let (mut video, mut audio) = (0usize, 0usize);
@@ -511,12 +520,15 @@ pub(crate) fn verify_final_media_with_container(
         .map_err(|e| {
             format!(
                 "成品校验失败（{label} {}：不存在或不可读：{e}）",
-                p.display()
+                redact_path(p)
             )
         })?
         .len();
     if len == 0 {
-        return Err(format!("成品校验失败（{label} {}：0 字节）", p.display()));
+        return Err(format!(
+            "成品校验失败（{label} {}：0 字节）",
+            redact_path(p)
+        ));
     }
     let out = Command::new(ffprobe)
         .args([
@@ -532,7 +544,7 @@ pub(crate) fn verify_final_media_with_container(
         .map_err(|e| {
             format!(
                 "成品校验失败（{label} {}：ffprobe 启动失败：{e}）",
-                p.display()
+                redact_path(p)
             )
         })?;
     if !out.status.success() {
@@ -543,8 +555,9 @@ pub(crate) fn verify_final_media_with_container(
             .collect::<Vec<_>>()
             .join(" | ");
         return Err(format!(
-            "成品校验失败（{label} {}：不可解析：{tail}）",
-            p.display()
+            "成品校验失败（{label} {}：不可解析：{}）",
+            redact_path(p),
+            redact_text_known_paths(&tail, &[p])
         ));
     }
     let text = String::from_utf8_lossy(&out.stdout);
@@ -560,21 +573,21 @@ pub(crate) fn verify_final_media_with_container(
     if !container_family_ok(container, &format_name) {
         return Err(format!(
             "成品校验失败（{label} {}：容器族不符：format_name={format_name:?}，期望 {}）",
-            p.display(),
+            redact_path(p),
             container_family_label(container)
         ));
     }
     if !(duration > 0.0) {
         return Err(format!(
             "成品校验失败（{label} {}：时长无效 {duration}）",
-            p.display()
+            redact_path(p)
         ));
     }
     let (video, audio) = probe_stream_counts(ffprobe, p)?;
     if video != expected.video || audio != expected.audio {
         return Err(format!(
             "成品校验失败（{label} {}：轨数不符：期望 v={} a={}，实际 v={video} a={audio}）",
-            p.display(),
+            redact_path(p),
             expected.video,
             expected.audio
         ));
@@ -741,7 +754,8 @@ pub(crate) fn run_finalize_transaction(
     let _ = std::fs::remove_file(&remux_tmp);
 
     runner.concat(job.list_path, &concat_tmp, cancel)?;
-    let ffprobe = crate::sidecar::ffprobe_exe().map_err(|e| format!("收尾校验失败：{e}"))?;
+    let ffprobe = crate::sidecar::ffprobe_exe()
+        .map_err(|e| format!("收尾校验失败：{}", redact_tool_error(&e)))?;
     verify_final_media_with_container(
         &ffprobe,
         &concat_tmp,
@@ -776,7 +790,11 @@ pub(crate) fn run_finalize_transaction(
     };
     committed.map_err(|e| match e {
         crate::naming::CommitError::Cancelled => "已取消（批量回滚），未提交成品".to_string(),
-        other => format!("成品提交失败: {other:?}"),
+        // CommitError::FinalExists 的 Debug 携带成品绝对路径：detail 在构造点脱敏。
+        other => format!(
+            "成品提交失败: {}",
+            redact_text_known_paths(&format!("{other:?}"), &[&commit_src, job.final_path])
+        ),
     })?;
     Ok(job.final_path.to_path_buf())
 }
@@ -805,7 +823,10 @@ fn segment_timing(seg: &Path) -> Option<SegmentTiming> {
     let ffprobe = match crate::sidecar::ffprobe_exe() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[sr-pipeline] ffprobe 不可用：{e}");
+            eprintln!(
+                "[sr-pipeline] ffprobe 不可用：{}",
+                crate::sidecar::render_tool_error_for_stderr(&e)
+            );
             return None;
         }
     };
@@ -828,7 +849,11 @@ fn segment_timing(seg: &Path) -> Option<SegmentTiming> {
             .take(3)
             .collect::<Vec<_>>()
             .join(" | ");
-        eprintln!("[sr-pipeline] ffprobe 失败（{}）: {tail}", seg.display());
+        eprintln!(
+            "[sr-pipeline] ffprobe 失败（{}）: {}",
+            crate::sidecar::render_path_for_stderr(seg),
+            crate::sidecar::render_text_for_stderr(&tail, &[seg])
+        );
         return None;
     }
     parse_segment_timing(&String::from_utf8_lossy(&out.stdout))
@@ -1034,6 +1059,34 @@ mod tests {
             check_finalize_space(2000, None).is_ok(),
             "查询失败应降级而不是拒绝"
         );
+    }
+
+    // ── M19c REQ-2/6：校验错误 detail 脱敏（basename 保留、父目录不出现） ──
+
+    #[test]
+    fn unit_verify_error_detail_redacts_parent_keeps_basename() {
+        let root =
+            std::env::temp_dir().join(format!("sr_m19c_verify_redact_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("private-user-dir");
+        std::fs::create_dir_all(&dir).expect("创建私有目录");
+        let ffprobe = crate::sidecar::ffprobe_exe().expect("定位锁定 ffprobe");
+
+        // 缺失文件：归因 + basename 保留，父目录不出现。
+        let missing = dir.join("missing_final.mp4");
+        let err = verify_final_media(&ffprobe, &missing).expect_err("缺失文件必须显式失败");
+        assert!(err.contains("成品校验失败"), "归因保留（{err}）");
+        assert!(err.contains("missing_final.mp4"), "basename 保留（{err}）");
+        assert!(!err.contains("private-user-dir"), "父目录不得出现（{err}）");
+
+        // ffprobe 不可解析分支：原因保留、路径脱敏（stderr 尾部已知路径同步替换）。
+        let corrupt = dir.join("corrupt_final.mkv");
+        std::fs::write(&corrupt, b"not-an-mkv").expect("写损坏成品");
+        let err = verify_final_media(&ffprobe, &corrupt).expect_err("损坏文件必须显式失败");
+        assert!(err.contains("不可解析"), "ffprobe 原因保留（{err}）");
+        assert!(err.contains("corrupt_final.mkv"), "basename 保留（{err}）");
+        assert!(!err.contains("private-user-dir"), "父目录不得出现（{err}）");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     struct FreeSpaceGuard;

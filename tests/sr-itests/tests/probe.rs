@@ -28,8 +28,8 @@ use std::sync::Mutex;
 
 use common::*;
 use sr_pipeline::probe::{
-    probe_capabilities, probe_capabilities_injected, CanvasLimits, EncoderProbe, LayerReport,
-    LayerStatus, ProbeCapabilities, ProbeInjections,
+    probe_capabilities, probe_capabilities_injected, CanvasLimits, LayerReport, LayerStatus,
+    ProbeCapabilities, ProbeInjections,
 };
 
 /// L2 串行门（M4–M7 先例）。

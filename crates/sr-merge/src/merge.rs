@@ -14,6 +14,14 @@
 //!
 //! 进度上报（Channel）属 `src-tauri` 命令层后续接线，本同步 API 不承载。
 //!
+//! 错误脱敏（M19c REQ-3/5/6，specs/005-log-redaction.md）：各 `MergeError` 的
+//! `detail` 与 ffmpeg/ffprobe stderr 尾部在**构造时**按边界脱敏——路径仅保留
+//! basename（`.screenrec_tmp` 会话后缀保留），错误码/退出码/诊断关键词
+//! （permission denied、no space 等）原样保留；结构体路径字段（`input`/`out`）
+//! 保留原始路径（恢复/校验语义与 `merge_error_string` 边界不变）。
+//! `SR_DIAG_PATHS=1|true` 恢复完整路径（REQ-4）。`ToolResolveError::Display`
+//! 不改动；运行时错误经 [`sr_core::redact::redact_tool_error`] 脱敏渲染。
+//!
 //! 轨道命名/默认选择规则（REQ-23「规则明确」）：**不改写任何轨道元数据**——`-c copy`
 //! 流拷贝保留源轨 codec/尺寸/采样率/标题，默认轨 disposition 亦随流拷贝（实测输出
 //! ≤1 默认轨/类型；见 m7-green-report §4）。
@@ -25,7 +33,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::inputs::check_input;
-use sr_core::tools::{resolve_tool_binary, ResolvedTool};
+use sr_core::redact::{paths_verbose, redact_path, redact_text_known_paths, redact_tool_error};
+use sr_core::tools::{resolve_tool_binary, ResolvedTool, ToolResolveError};
 
 /// REQ-23 合并配置。
 #[derive(Clone, Debug)]
@@ -48,6 +57,10 @@ pub struct MergeOutcome {
 }
 
 /// 合并错误（测试契约最小变体集 + 取消变体，见 m7-red-report §3.1/§8-3）。
+///
+/// 边界脱敏（M19c REQ-3）：各 `detail` 中的输入/输出/临时/工具路径默认替换为
+/// `<redacted>\<basename>`（`.screenrec_tmp` 会话后缀保留）；`SR_DIAG_PATHS=1`
+/// 保留完整路径。结构体路径字段保留原始路径（内部语义不变）。
 #[derive(Debug)]
 pub enum MergeError {
     /// E_MERGE_INCOMPATIBLE（§3.4「仅不可读/未被 MKV 接纳」）：不存在/不可读/空/
@@ -94,7 +107,8 @@ fn merge_impl(cfg: MergeConfig, cancel: Option<&AtomicBool>) -> Result<MergeOutc
         if let Err(detail) = check_input(path) {
             return Err(MergeError::InvalidInput {
                 input: path.clone(),
-                detail,
+                // 底层 detail 内嵌完整输入路径：按已知路径脱敏，保留拒绝原因/标记字节。
+                detail: render_text(&detail, &[path]),
             });
         }
     }
@@ -104,21 +118,21 @@ fn merge_impl(cfg: MergeConfig, cancel: Option<&AtomicBool>) -> Result<MergeOutc
         if same_path(&out, path) {
             return Err(MergeError::OutputUnavailable {
                 out: out.clone(),
-                detail: format!("输出路径与输入相同（不得覆盖输入）：{}", path.display()),
+                detail: format!("输出路径与输入相同（不得覆盖输入）：{}", render_path(path)),
             });
         }
     }
     if out.exists() {
         return Err(MergeError::OutputUnavailable {
             out: out.clone(),
-            detail: format!("输出路径已存在（不覆盖策略）：{}", out.display()),
+            detail: format!("输出路径已存在（不覆盖策略）：{}", render_path(&out)),
         });
     }
     let out_parent = parent_dir(&out);
     if !out_parent.is_dir() {
         return Err(MergeError::OutputUnavailable {
             out: out.clone(),
-            detail: format!("输出父目录不存在/不可用：{}", out_parent.display()),
+            detail: format!("输出父目录不存在/不可用：{}", render_path(&out_parent)),
         });
     }
 
@@ -127,7 +141,7 @@ fn merge_impl(cfg: MergeConfig, cancel: Option<&AtomicBool>) -> Result<MergeOutc
     if tmp.exists() {
         return Err(MergeError::OutputUnavailable {
             out: out.clone(),
-            detail: format!("临时路径已存在（并发冲突）：{}", tmp.display()),
+            detail: format!("临时路径已存在（并发冲突）：{}", render_path(&tmp)),
         });
     }
     let mut tmp_guard = TempGuard::new(tmp.clone());
@@ -142,7 +156,7 @@ fn merge_impl(cfg: MergeConfig, cancel: Option<&AtomicBool>) -> Result<MergeOutc
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| MergeError::SidecarFailed {
-            detail: format!("spawn ffmpeg 失败（{}）：{e}", ffmpeg.path.display()),
+            detail: format!("spawn ffmpeg 失败（{}）：{e}", render_path(&ffmpeg.path)),
         })?;
     let stderr_tail = Arc::new(Mutex::new(String::new()));
     let drainer = spawn_stderr_drainer(&mut child, stderr_tail.clone());
@@ -175,7 +189,12 @@ fn merge_impl(cfg: MergeConfig, cancel: Option<&AtomicBool>) -> Result<MergeOutc
     let tail = stderr_tail.lock().map(|t| t.clone()).unwrap_or_default();
     if !status.success() {
         return Err(MergeError::SidecarFailed {
-            detail: format!("ffmpeg 退出非零（{status}）；stderr 尾部：{tail}"),
+            // 原始 stderr 尾部可能回显输入/临时/ffmpeg 完整路径：按已知路径替换，
+            // 保留退出码与诊断关键词（permission denied、no space 等）。
+            detail: render_text(
+                &format!("ffmpeg 退出非零（{status}）；stderr 尾部：{tail}"),
+                &known_merge_paths(&inputs, &tmp, &out, &ffmpeg.path),
+            ),
         });
     }
 
@@ -185,7 +204,7 @@ fn merge_impl(cfg: MergeConfig, cancel: Option<&AtomicBool>) -> Result<MergeOutc
         return Err(MergeError::SidecarFailed {
             detail: format!(
                 "ffmpeg 退出 0 但未产出输出（0 字节/缺失）：{}",
-                tmp.display()
+                render_path(&tmp)
             ),
         });
     }
@@ -196,12 +215,16 @@ fn merge_impl(cfg: MergeConfig, cancel: Option<&AtomicBool>) -> Result<MergeOutc
         // 缩短「校验-改名」竞争窗（并发对端在窗口内提交了同名产物；不覆盖）。
         return Err(MergeError::OutputUnavailable {
             out: out.clone(),
-            detail: format!("提交时输出路径已存在（并发竞争）：{}", out.display()),
+            detail: format!("提交时输出路径已存在（并发竞争）：{}", render_path(&out)),
         });
     }
     std::fs::rename(&tmp, &out).map_err(|e| MergeError::OutputUnavailable {
         out: out.clone(),
-        detail: format!("原子改名失败（{} → {}）：{e}", tmp.display(), out.display()),
+        detail: format!(
+            "原子改名失败（{} → {}）：{e}",
+            render_path(&tmp),
+            render_path(&out)
+        ),
     })?;
     tmp_guard.disarm();
 
@@ -268,6 +291,63 @@ fn same_path(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// 错误脱敏边界（M19c REQ-3/4）：`verbose=false`（默认）时单路径渲染为
+/// [`redact_path`] 结果；`verbose=true`（`SR_DIAG_PATHS=1|true`）保留完整路径。
+/// 纯函数形式便于测试不触碰进程级环境变量。
+fn render_path_verbose(verbose: bool, path: &Path) -> String {
+    if verbose {
+        path.display().to_string()
+    } else {
+        redact_path(path)
+    }
+}
+
+/// 错误脱敏边界（M19c REQ-3/4）：`verbose=false`（默认）时自由文本（stderr 尾部/
+/// 底层 detail）按已知路径替换为 [`redact_text_known_paths`] 结果——不整段丢弃，
+/// 退出码/错误关键词原样保留；`verbose=true` 原样保留全文。
+fn render_text_verbose(verbose: bool, text: &str, known: &[&Path]) -> String {
+    if verbose {
+        text.to_string()
+    } else {
+        redact_text_known_paths(text, known)
+    }
+}
+
+/// 运行期包装：读取 `SR_DIAG_PATHS` 后委托 [`render_path_verbose`]。
+fn render_path(path: &Path) -> String {
+    render_path_verbose(paths_verbose(), path)
+}
+
+/// 运行期包装：读取 `SR_DIAG_PATHS` 后委托 [`render_text_verbose`]。
+fn render_text(text: &str, known: &[&Path]) -> String {
+    render_text_verbose(paths_verbose(), text, known)
+}
+
+/// 工具解析错误的边界渲染：`ToolResolveError::Display` 不变（REQ-5），默认改用
+/// [`redact_tool_error`]（保留工具名/尝试顺序/类别，路径脱敏）；`SR_DIAG_PATHS=1`
+/// 保留 Display 完整路径。
+fn render_tool_error(err: &ToolResolveError) -> String {
+    if paths_verbose() {
+        err.to_string()
+    } else {
+        redact_tool_error(err)
+    }
+}
+
+/// ffmpeg stderr 尾部脱敏的已知路径清单：全部输入 + 临时物 + 输出 + ffmpeg 本体。
+fn known_merge_paths<'a>(
+    inputs: &'a [PathBuf],
+    tmp: &'a Path,
+    out: &'a Path,
+    ffmpeg: &'a Path,
+) -> Vec<&'a Path> {
+    let mut known: Vec<&Path> = inputs.iter().map(|p| p.as_path()).collect();
+    known.push(tmp);
+    known.push(out);
+    known.push(ffmpeg);
+    known
+}
+
 /// 合并 argv（§3.3 基准：逐输入 `-i` → 逐输入显式全轨 `-map i` → `-c copy` → MKV）。
 /// 不用 `-shortest`（保留完整时长）；不写 `-y`（临时物为全新路径，若意外存在则 sidecar
 /// 失败而非覆盖）。
@@ -292,8 +372,12 @@ fn build_merge_args(inputs: &[PathBuf], tmp: &Path) -> Vec<String> {
 }
 
 /// 产物轨计数（ffprobe；逐流 codec_type 行）。
+///
+/// 错误 detail 在本函数内完成边界脱敏（M19c）：ffprobe 解析失败走
+/// [`render_tool_error`]；spawn 失败的 ffprobe 路径与非零退出的 stderr 尾部按
+/// 已知路径（被探测产物 + ffprobe 本体）替换，退出码保留。
 fn probe_track_counts(path: &Path) -> Result<(usize, usize), String> {
-    let ffprobe = resolve_tool_binary("ffprobe").map_err(|e| e.to_string())?;
+    let ffprobe = resolve_tool_binary("ffprobe").map_err(|e| render_tool_error(&e))?;
     let out = Command::new(&ffprobe.path)
         .args([
             "-v",
@@ -305,12 +389,15 @@ fn probe_track_counts(path: &Path) -> Result<(usize, usize), String> {
         ])
         .arg(path)
         .output()
-        .map_err(|e| format!("spawn ffprobe 失败（{}）：{e}", ffprobe.path.display()))?;
+        .map_err(|e| format!("spawn ffprobe 失败（{}）：{e}", render_path(&ffprobe.path)))?;
     if !out.status.success() {
-        return Err(format!(
-            "ffprobe 校验产物失败（exit={}；stderr={}）",
-            out.status,
-            String::from_utf8_lossy(&out.stderr)
+        return Err(render_text(
+            &format!(
+                "ffprobe 校验产物失败（exit={}；stderr={}）",
+                out.status,
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            &[path, &ffprobe.path],
         ));
     }
     let (mut v, mut a) = (0usize, 0usize);
@@ -324,11 +411,12 @@ fn probe_track_counts(path: &Path) -> Result<(usize, usize), String> {
     Ok((v, a))
 }
 
-/// 统一运行时工具解析（M11-C P1-5：env → Tauri resource → exe 同目录 → 开发回退）；
-/// 失败时错误信息由 `sr_core::tools` 逐条列出尝试路径。
+/// 统一运行时工具解析（M11-C P1-5：env → Tauri resource → exe 同目录 → 开发回退）。
+/// 失败 detail 用脱敏渲染（M19c：`ToolResolveError::Display` 不变，见
+/// [`render_tool_error`]）。
 fn resolve_merge_tool(name: &str) -> Result<ResolvedTool, MergeError> {
     resolve_tool_binary(name).map_err(|e| MergeError::SidecarFailed {
-        detail: e.to_string(),
+        detail: render_tool_error(&e),
     })
 }
 
@@ -360,4 +448,228 @@ fn spawn_stderr_drainer(
             }
         })
         .expect("spawn stderr 排空线程")
+}
+
+#[cfg(test)]
+mod redact_tests {
+    //! M19c REQ-3/5/6 边界脱敏回归（specs/005-log-redaction.md §5）：
+    //! detail/stderr 无 `C:\Users\`（用户名）、basename 保留、错误码/退出码/
+    //! 诊断关键词保留；`SR_DIAG_PATHS=1` 恢复完整路径。不触碰 ffmpeg/长媒体。
+
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// 串行化全部测试：`merge_recordings` 内部读 `SR_DIAG_PATHS`，
+    /// 与环境变量测试并行会竞态（同 sr-core::redact 测试模式）。
+    static SR_DIAG_PATHS_LOCK: Mutex<()> = Mutex::new(());
+
+    /// 环境变量快照守卫：无论测试是否 panic 都恢复原值。
+    struct EnvSnapshot {
+        saved: Option<std::ffi::OsString>,
+    }
+
+    impl EnvSnapshot {
+        fn take() -> Self {
+            Self {
+                saved: std::env::var_os("SR_DIAG_PATHS"),
+            }
+        }
+    }
+
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            match &self.saved {
+                Some(v) => std::env::set_var("SR_DIAG_PATHS", v),
+                None => std::env::remove_var("SR_DIAG_PATHS"),
+            }
+        }
+    }
+
+    /// 本测试专属临时目录（进程 id + 用例名隔离；清理尽力而为）。
+    fn test_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("sr-merge-redact-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("创建测试目录");
+        dir
+    }
+
+    /// 写入带 Matroska EBML 存续标记的假产物（通过 `check_input` 前置校验）。
+    fn write_ebml_stub(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            [0x1A, 0x45, 0xDF, 0xA3, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        )
+        .expect("写入 EBML 假产物");
+        path
+    }
+
+    #[test]
+    fn render_path_verbose_false_redacts_true_restores() {
+        let _lock = SR_DIAG_PATHS_LOCK.lock().expect("SR_DIAG_PATHS 锁");
+        let p = Path::new(r"C:\Users\elvis\Videos\seg.mkv");
+        assert_eq!(render_path_verbose(false, p), r"<redacted>\seg.mkv");
+        assert_eq!(
+            render_path_verbose(true, p),
+            r"C:\Users\elvis\Videos\seg.mkv"
+        );
+    }
+
+    #[test]
+    fn render_text_verbose_keeps_keywords_and_basename_without_user_dir() {
+        let _lock = SR_DIAG_PATHS_LOCK.lock().expect("SR_DIAG_PATHS 锁");
+        let input = PathBuf::from(r"C:\Users\elvis\Videos\sessions\in1.mkv");
+        let tmp = PathBuf::from(
+            r"C:\Users\elvis\AppData\Local\Temp\.screenrec_tmp\s-9\out.mkv.merge-tmp-42-0.mkv",
+        );
+        let out = PathBuf::from(r"C:\Users\elvis\Videos\final.mkv");
+        let ffmpeg = PathBuf::from(r"C:\Users\elvis\app\bin\ffmpeg.exe");
+        let inputs = vec![input.clone()];
+        let tail = format!(
+            "{}: Permission denied; {}: No space left on device（exit code 1）",
+            input.display(),
+            tmp.display()
+        );
+
+        let known = known_merge_paths(&inputs, &tmp, &out, &ffmpeg);
+        let redacted = render_text_verbose(false, &tail, &known);
+        // 无完整路径/用户名。
+        assert!(!redacted.contains(r"C:\Users\"), "{redacted}");
+        assert!(!redacted.contains("elvis"), "{redacted}");
+        // basename 保留；`.screenrec_tmp` 会话后缀保留。
+        assert!(redacted.contains(r"<redacted>\in1.mkv"), "{redacted}");
+        assert!(
+            redacted.contains(r".screenrec_tmp\s-9\out.mkv.merge-tmp-42-0.mkv"),
+            "{redacted}"
+        );
+        // 诊断关键词/退出码保留。
+        assert!(redacted.contains("Permission denied"), "{redacted}");
+        assert!(redacted.contains("No space left on device"), "{redacted}");
+        assert!(redacted.contains("exit code 1"), "{redacted}");
+
+        // SR_DIAG_PATHS=1：原样保留全文（REQ-4）。
+        assert_eq!(render_text_verbose(true, &tail, &known), tail);
+    }
+
+    #[test]
+    fn invalid_input_detail_redacted_keeps_reason() {
+        let _lock = SR_DIAG_PATHS_LOCK.lock().expect("SR_DIAG_PATHS 锁");
+        let dir = test_dir("invalid-input");
+        let good = write_ebml_stub(&dir, "good.mkv");
+        let missing = dir.join("missing-a.mkv");
+
+        // 不存在：拒绝原因保留，路径只剩 basename。
+        let err = merge_recordings(MergeConfig {
+            inputs: vec![missing.clone(), good.clone()],
+            out: dir.join("out.mkv"),
+        })
+        .expect_err("缺失输入应拒绝");
+        let MergeError::InvalidInput { detail, .. } = err else {
+            panic!("应为 InvalidInput");
+        };
+        assert!(!detail.contains(r"C:\Users\"), "{detail}");
+        assert!(detail.contains(r"<redacted>\missing-a.mkv"), "{detail}");
+        assert!(detail.contains("输入不存在/不可读"), "{detail}");
+
+        // 容器不接纳：标记字节诊断信息保留。
+        let garbage = dir.join("garbage-b.bin");
+        std::fs::write(&garbage, [0u8; 16]).expect("写入非容器文件");
+        let err = merge_recordings(MergeConfig {
+            inputs: vec![good, garbage],
+            out: dir.join("out.mkv"),
+        })
+        .expect_err("非 MKV/MP4 输入应拒绝");
+        let MergeError::InvalidInput { detail, .. } = err else {
+            panic!("应为 InvalidInput");
+        };
+        assert!(!detail.contains(r"C:\Users\"), "{detail}");
+        assert!(detail.contains(r"<redacted>\garbage-b.bin"), "{detail}");
+        assert!(detail.contains("输入未被 MKV/MP4 接纳"), "{detail}");
+        assert!(detail.contains("前 12 字节"), "{detail}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn output_unavailable_detail_redacted_keeps_policy_reason() {
+        let _lock = SR_DIAG_PATHS_LOCK.lock().expect("SR_DIAG_PATHS 锁");
+        let dir = test_dir("output-exists");
+        let a = write_ebml_stub(&dir, "a.mkv");
+        let b = write_ebml_stub(&dir, "b.mkv");
+        let out = dir.join("exists-out.mkv");
+        std::fs::write(&out, b"placeholder").expect("预置已存在输出");
+
+        let err = merge_recordings(MergeConfig {
+            inputs: vec![a, b],
+            out: out.clone(),
+        })
+        .expect_err("已存在输出应拒绝");
+        let MergeError::OutputUnavailable { detail, .. } = err else {
+            panic!("应为 OutputUnavailable");
+        };
+        assert!(!detail.contains(r"C:\Users\"), "{detail}");
+        assert!(detail.contains(r"<redacted>\exists-out.mkv"), "{detail}");
+        assert!(detail.contains("输出路径已存在（不覆盖策略）"), "{detail}");
+        // 不覆盖策略本身不变：既有文件未被触碰。
+        assert_eq!(std::fs::read(&out).expect("读取既有输出"), b"placeholder");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn input_count_detail_preserved_without_paths() {
+        let _lock = SR_DIAG_PATHS_LOCK.lock().expect("SR_DIAG_PATHS 锁");
+        let dir = test_dir("count");
+        let a = write_ebml_stub(&dir, "only.mkv");
+        let err = merge_recordings(MergeConfig {
+            inputs: vec![a],
+            out: dir.join("out.mkv"),
+        })
+        .expect_err("单输入应拒绝");
+        let MergeError::InvalidInput { detail, .. } = err else {
+            panic!("应为 InvalidInput");
+        };
+        assert!(!detail.contains(r"C:\Users\"), "{detail}");
+        assert!(!detail.contains('<'), "{detail}");
+        assert!(detail.contains("合并需要 ≥2 个输入（得到 1）"), "{detail}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sr_diag_paths_env_switches_runtime_rendering() {
+        let _lock = SR_DIAG_PATHS_LOCK.lock().expect("SR_DIAG_PATHS 锁");
+        let _snapshot = EnvSnapshot::take();
+        let p = Path::new(r"C:\Users\elvis\Videos\seg.mkv");
+
+        std::env::remove_var("SR_DIAG_PATHS");
+        assert_eq!(render_path(p), r"<redacted>\seg.mkv");
+
+        std::env::set_var("SR_DIAG_PATHS", "1");
+        assert_eq!(render_path(p), r"C:\Users\elvis\Videos\seg.mkv");
+
+        std::env::set_var("SR_DIAG_PATHS", "0");
+        assert_eq!(render_path(p), r"<redacted>\seg.mkv");
+    }
+
+    #[test]
+    fn tool_resolve_error_detail_redacted_without_changing_display() {
+        let _lock = SR_DIAG_PATHS_LOCK.lock().expect("SR_DIAG_PATHS 锁");
+        let err = ToolResolveError {
+            name: "ffmpeg".to_string(),
+            attempted: vec![PathBuf::from(r"C:\Users\elvis\app\bin\ffmpeg.exe")],
+        };
+        // Display 本身不变（REQ-5：--self-check 依赖完整路径）。
+        assert!(
+            err.to_string()
+                .contains(r"C:\Users\elvis\app\bin\ffmpeg.exe"),
+            "{}",
+            err
+        );
+        // 运行时 detail 渲染默认脱敏。
+        let detail = render_tool_error(&err);
+        assert!(!detail.contains(r"C:\Users\"), "{detail}");
+        assert!(detail.contains("ffmpeg.exe"), "{detail}");
+        assert!(detail.contains("无法定位 ffmpeg"), "{detail}");
+    }
 }

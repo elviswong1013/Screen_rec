@@ -391,6 +391,22 @@ impl Settings {
     }
 }
 
+/// M19c REQ-2：设置解析失败的 stderr 文本（纯函数；`verbose` 显式传入便于测试）。
+///
+/// 默认对路径脱敏（REQ-1 [`sr_core::redact::redact_path`]：`<redacted>\settings.json`），
+/// 保留 serde 原因；`verbose`（`SR_DIAG_PATHS=1`）时保持完整路径（REQ-4 诊断 opt-in，
+/// 与既有 `{path:?}` 形态一致）。
+fn parse_failure_message(reason: impl std::fmt::Display, path: &Path, verbose: bool) -> String {
+    if verbose {
+        format!("[settings] {path:?} 解析失败，回退默认值: {reason}")
+    } else {
+        format!(
+            "[settings] {} 解析失败，回退默认值: {reason}",
+            sr_core::redact::redact_path(path)
+        )
+    }
+}
+
 /// 读取设置；文件缺失或解析失败时落默认值并尝试写回（使存储位置立即可验证）。
 /// 写回失败不阻塞启动（设置模块无致命路径；下次保存时会重试建目录）。
 pub fn load_or_default(dir: &Path) -> Settings {
@@ -403,7 +419,12 @@ pub fn load_or_default(dir: &Path) -> Settings {
                 s
             }
             Err(e) => {
-                eprintln!("[settings] {path:?} 解析失败，回退默认值: {e}");
+                // M19c REQ-2：默认 stderr 不携带完整路径（`SR_DIAG_PATHS=1` 恢复）；
+                // serde 原因保留。
+                eprintln!(
+                    "{}",
+                    parse_failure_message(&e, &path, sr_core::redact::paths_verbose())
+                );
                 let s = Settings::default();
                 let _ = save(dir, &s);
                 s
@@ -963,6 +984,57 @@ mod tests {
         assert_eq!(s.output_dir, r"D:\out", "磁盘坏值不得重置其余字段");
         assert_eq!(s.fps, 60, "磁盘坏值不得重置其余字段");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─────────────────── M19c/REQ-2：设置解析失败 stderr 脱敏 ───────────────────
+
+    /// M19c REQ-2：解析失败默认 stderr 只保留 `<redacted>\settings.json` 与 serde 原因，
+    /// 不出现父目录/用户名；`SR_DIAG_PATHS=1`（verbose=true）恢复完整路径。
+    #[test]
+    fn unit_settings_parse_failure_message_redacts_path_keeps_reason() {
+        let path = Path::new(r"C:\Users\elvis\AppData\Local\com.screenrec.desktop\settings.json");
+        let reason = "expected value at line 1 column 1";
+
+        let default = parse_failure_message(reason, path, false);
+        assert!(
+            default.contains(r"<redacted>\settings.json"),
+            "默认应保留脱敏后文件名（得到 {default}）"
+        );
+        assert!(
+            !default.contains("elvis") && !default.contains(r"C:\Users"),
+            "默认不得泄漏父目录/用户名（得到 {default}）"
+        );
+        assert!(
+            default.contains(reason),
+            "serde 原因必须保留（得到 {default}）"
+        );
+        assert!(
+            default.starts_with("[settings] "),
+            "既有日志前缀与语义保留（得到 {default}）"
+        );
+
+        let verbose = parse_failure_message(reason, path, true);
+        assert!(
+            verbose.contains(r"C:\\Users\\elvis"),
+            "REQ-4：SR_DIAG_PATHS=1 恢复完整路径（{path:?} 形态，得到 {verbose}）"
+        );
+        assert!(
+            verbose.contains(reason),
+            "verbose 同样保留 serde 原因（得到 {verbose}）"
+        );
+    }
+
+    /// M19c REQ-2：真实磁盘损坏文件走 `load_or_default` 不 panic（stderr 委托已由
+    /// 纯函数测试覆盖；此处钉住既有回退默认值语义不变）。
+    #[test]
+    fn unit_settings_load_corrupt_file_still_falls_back_and_rewrites() {
+        let dir = temp_dir("redact-corrupt");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        std::fs::write(dir.join("settings.json"), b"{ not json").expect("write corrupt");
+        let s = load_or_default(&dir);
+        assert_eq!(s, Settings::default(), "M19c：损坏文件回退默认值行为不变");
+        assert!(dir.join("settings.json").exists(), "默认值仍应写回存储位置");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

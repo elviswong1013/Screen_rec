@@ -32,6 +32,8 @@ use tauri::{AppHandle, Manager};
 
 use sr_audio::wasapi::AudioSourceSpec;
 use sr_core::events::{ChannelHub, Receiver, Subscription};
+// M19c REQ-3：边界脱敏原语（specs/005-log-redaction.md）。
+use sr_core::redact::{paths_verbose, redact_device_id, redact_path, redact_text_known_paths};
 use sr_enum::windows as window_enum;
 use sr_enum::{audio_sessions, monitors};
 use sr_merge::merge::{MergeConfig, MergeError};
@@ -704,12 +706,33 @@ impl CommandsState {
 }
 
 /// M16/REQ-12：管线 StopNotice → JSON 投影。
+///
+/// M19c REQ-3：`endpoint` 缺友好名时管线回退为 raw WASAPI 设备 ID（形如
+/// `{0.0.x.00000000}.{GUID}`），默认以 `<device>` 暴露；友好名/显示器稳定标签
+/// 原样保留。设备枚举 DTO（`list_render_endpoints` 等）不经过本函数，不受影响。
 fn notice_out(notice: &StopNotice) -> StopNoticeOut {
     StopNoticeOut {
         code: notice.code.clone(),
-        endpoint: notice.endpoint.clone(),
+        endpoint: notice.endpoint.as_deref().map(redact_notice_endpoint),
         detail: notice.detail.clone(),
     }
+}
+
+/// M19c REQ-3：raw WASAPI 设备 ID → `<device>`（REQ-1 `redact_device_id`）；
+/// 其余端点标签（友好名/GDI 设备名/Monitor N）非用户数据，原样保留。
+fn redact_notice_endpoint(endpoint: &str) -> String {
+    if is_raw_wasapi_device_id(endpoint) {
+        redact_device_id(endpoint).to_string()
+    } else {
+        endpoint.to_string()
+    }
+}
+
+/// WASAPI IMMDevice ID 判定：`{0.0.<flow>.<实例>}.{GUID}` 形态（渲染/采集均为
+/// `{0.0.` 前缀）；友好名与 GDI/DisplayConfig 设备路径不会命中该形态。
+fn is_raw_wasapi_device_id(id: &str) -> bool {
+    let id = id.trim();
+    id.starts_with("{0.0.") && id.contains("}.{") && id.ends_with('}')
 }
 
 /// 收尾监视线程：等待该 handle 的最终结果 → 事件；发送端失败不影响录制（REQ-31）。
@@ -916,7 +939,8 @@ pub(crate) fn start_routes_impl(
         settings.output_container,
         settings.include_window_title_in_filename,
     )
-    .map_err(|e| e.to_string())?;
+    // M19c REQ-3：启动失败（E_START_FAILED 等可能内嵌输出目录原始路径）在边界脱敏。
+    .map_err(|e| redact_error_text(&e.to_string()))?;
     let state = app.state::<CommandsState>();
     let ids = state.alloc_ids(handles.len());
     for (id, handle) in ids.iter().zip(handles) {
@@ -952,7 +976,8 @@ pub async fn start_audio_only(
             settings.keep_segments,
             settings.audio_sample_rate,
         )
-        .map_err(|e| e.to_string())?;
+        // M19c REQ-3：启动失败（可能内嵌输出目录原始路径）在边界脱敏。
+        .map_err(|e| redact_error_text(&e.to_string()))?;
         let state = app.state::<CommandsState>();
         let ids = state.alloc_ids(count);
         state.launch_group(&app, ids.clone(), Arc::new(ActiveRoute::AudioOnly(handle)));
@@ -1073,9 +1098,13 @@ pub async fn take_screenshot(
     blocking(move || {
         let dir = resolve_output_dir(&app, request.output_dir);
         std::fs::create_dir_all(&dir).map_err(|e| {
+            // M19c REQ-3：目录路径默认脱敏（io 错误原因本身不含路径，原样保留）。
             invalid(
                 "E_OUTPUT_UNAVAILABLE",
-                format!("创建截图输出目录失败（{dir}）：{e}"),
+                format!(
+                    "创建截图输出目录失败（{}）：{e}",
+                    redact_path_display(Path::new(&dir))
+                ),
             )
         })?;
         let saved = screenshot::take_screenshot(ScreenshotRequest {
@@ -1557,9 +1586,142 @@ fn strip_code_prefix(text: &str) -> String {
     }
 }
 
+// ─────────────────── M19c/REQ-3：错误串边界脱敏（specs/005-log-redaction.md） ───────────────────
+//
+// 边界原则：内部 `RouteError`/`ShotError`/`MergeError`/`RecoveryError` 保留原始路径
+// （恢复/校验语义与既有测试依赖）；仅在 src-tauri → UI/stderr 字符串边界脱敏——
+// 结构化路径字段用 [`redact_path_display`]，上游 raw detail 兜底扫描绝对路径子串
+// （[`scrub_absolute_paths`]），已知路径优先精确替换（REQ-1 `redact_text_known_paths`）。
+// `E_*` 错误码与退出码等其余文本不动；`SR_DIAG_PATHS=1` 恢复完整路径（REQ-4）。
+
+/// 边界脱敏核心（纯函数；`verbose` 显式传入便于测试，不读进程环境）。
+/// `known` 为调用方可提供的已知路径（输入/输出/会话目录等），先精确替换再兜底扫描。
+fn redact_error_text_with(text: &str, known: &[&Path], verbose: bool) -> String {
+    if verbose {
+        return text.to_string();
+    }
+    let replaced = if known.is_empty() {
+        text.to_string()
+    } else {
+        redact_text_known_paths(text, known)
+    };
+    scrub_absolute_paths(&replaced)
+}
+
+/// 运行期边界脱敏（读 `SR_DIAG_PATHS`，REQ-4）：无已知路径上下文时使用。
+fn redact_error_text(text: &str) -> String {
+    redact_error_text_with(text, &[], paths_verbose())
+}
+
+/// 运行期边界脱敏：已知路径（display + 正斜杠形式）优先精确替换。
+fn redact_error_text_known<'a>(text: &str, known: &[&'a Path]) -> String {
+    redact_error_text_with(text, known, paths_verbose())
+}
+
+/// 路径渲染（运行期）：默认 [`redact_path`]（保留 basename/`.screenrec_tmp` 会话
+/// 后缀）；`SR_DIAG_PATHS=1` 恢复完整路径（REQ-4）。
+fn redact_path_display(path: &Path) -> String {
+    if paths_verbose() {
+        path.display().to_string()
+    } else {
+        redact_path(path)
+    }
+}
+
+/// 兜底扫描（纯函数）：把文本中残余的绝对路径子串逐段替换为 [`redact_path`] 结果。
+///
+/// 触发形态：盘符 `X:\`、`X:/`（前一字符为字母/数字时不视作起点），UNC/设备
+/// `\\`（含 `\\?\` verbatim、`\\.\` 设备名、`\\server\share`）。路径子串延续到
+/// 空白/引号/括号（含全角）/非法文件名字符为止——Windows 文件名不得包含
+/// `" | < > *`（`?` 随 `\\?\` verbatim 前缀一并消费），故这些字符必然是错误
+/// 文本的分隔而非路径的一部分。
+/// `format!("{path:?}")` 的转义反斜杠（`\\`）与中英文路径组件均被完整消费；
+/// 不匹配任何形态的文本原样保留，对任何输入不 panic。
+pub(crate) fn scrub_absolute_paths(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut emitted_to = 0usize; // 已原样输出的区间终点
+    let mut i = 0usize;
+    while i < text.len() {
+        if text.is_char_boundary(i) {
+            if let Some(trigger) = absolute_path_trigger(text, i) {
+                let end = absolute_path_end(text, i + trigger);
+                out.push_str(&text[emitted_to..i]);
+                out.push_str(&redact_path(Path::new(&text[i..end])));
+                emitted_to = end;
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&text[emitted_to..]);
+    out
+}
+
+/// 判定 `text[i..]` 是否为绝对路径子串起点；`Some(n)` = 触发前缀长度。
+fn absolute_path_trigger(text: &str, i: usize) -> Option<usize> {
+    let b = text.as_bytes();
+    // 盘符形态：X:\ 或 X:/（前一字符为字母/数字时不命中，避免切碎片段）。
+    if b.len() >= i + 3
+        && b[i].is_ascii_alphabetic()
+        && b[i + 1] == b':'
+        && (b[i + 2] == b'\\' || b[i + 2] == b'/')
+        && !text[..i]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+    {
+        return Some(3);
+    }
+    // UNC / 设备形态：\\（\\?\、\\.\、\\server\share）。
+    if b.len() >= i + 2 && b[i] == b'\\' && b[i + 1] == b'\\' {
+        return Some(2);
+    }
+    None
+}
+
+/// 路径子串终点：从 `from` 起延续到首个终止字符（不含）。
+fn absolute_path_end(text: &str, from: usize) -> usize {
+    let mut end = from;
+    for (idx, c) in text[from..].char_indices() {
+        if is_path_terminator(c) {
+            break;
+        }
+        end = from + idx + c.len_utf8();
+    }
+    end
+}
+
+/// 错误文本中的路径终止字符：空白、引号、括号（ASCII + 全角）、Windows 非法
+/// 文件名字符与其余常见全角标点。`?` 不是终止符——`\\?\` verbatim 前缀必须
+/// 与后续路径一并完整消费。
+fn is_path_terminator(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(c, '"' | '\'' | '`' | '|' | '<' | '>' | '*' | '(' | ')')
+        || matches!(
+            c,
+            '：' | '，'
+                | '；'
+                | '！'
+                | '？'
+                | '（'
+                | '）'
+                | '「'
+                | '」'
+                | '『'
+                | '』'
+                | '《'
+                | '》'
+                | '【'
+                | '】'
+        )
+}
+
 /// 路由错误消息（去前缀；事件里 code 已单列）。
+/// M19c REQ-3：内部 `RouteError` 的 detail 保留原始路径，转 UI 字符串时在此
+/// 边界脱敏（错误码分类 `route_error_code` 基于类型化错误，先于本渲染执行）。
 fn route_error_message(error: &RouteError) -> String {
-    strip_code_prefix(&error.to_string())
+    strip_code_prefix(&redact_error_text(&error.to_string()))
 }
 
 pub(crate) fn shot_error_string(error: ShotError) -> String {
@@ -1574,40 +1736,64 @@ pub(crate) fn shot_error_string(error: ShotError) -> String {
         ShotError::OutputWriteFailed { .. } => "E_OUTPUT_UNAVAILABLE",
         ShotError::Internal { .. } => "E_INTERNAL",
     };
-    invalid(code, strip_code_prefix(&error.to_string()))
+    // M19c REQ-3：结构化输出路径作已知路径优先替换（detail 可能复述该路径）。
+    let known: Vec<&Path> = match &error {
+        ShotError::OutputWriteFailed { path, .. } => vec![path.as_path()],
+        _ => Vec::new(),
+    };
+    invalid(
+        code,
+        redact_error_text_known(&strip_code_prefix(&error.to_string()), &known),
+    )
 }
 
+/// M19c REQ-3：MergeError → UI 错误串（边界脱敏；`E_*` 码与可诊断原因保留，
+/// 输入/输出路径及 stderr 尾部中的原始路径不外泄。即使上游已内部脱敏，此处
+/// 仍兜底重扫——边界不假设上游行为）。
 fn merge_error_string(error: MergeError) -> String {
     match error {
         MergeError::InvalidInput { input, detail } => invalid(
             "E_MERGE_INCOMPATIBLE",
-            format!("输入不可用（{}）：{detail}", input.display()),
+            format!(
+                "输入不可用（{}）：{}",
+                redact_path_display(&input),
+                redact_error_text_known(&detail, &[&input]),
+            ),
         ),
         MergeError::OutputUnavailable { out, detail } => invalid(
             "E_OUTPUT_UNAVAILABLE",
-            format!("输出不可用（{}）：{detail}", out.display()),
+            format!(
+                "输出不可用（{}）：{}",
+                redact_path_display(&out),
+                redact_error_text_known(&detail, &[&out]),
+            ),
         ),
-        MergeError::SidecarFailed { detail } => {
-            invalid("E_SIDECAR_EXIT", format!("合并失败：{detail}"))
-        }
-        MergeError::Cancelled { detail } => invalid("E_CANCELLED", detail),
+        MergeError::SidecarFailed { detail } => invalid(
+            "E_SIDECAR_EXIT",
+            format!("合并失败：{}", redact_error_text(&detail)),
+        ),
+        MergeError::Cancelled { detail } => invalid("E_CANCELLED", redact_error_text(&detail)),
     }
 }
 
+/// M19c REQ-3：RecoveryError → UI 错误串（边界脱敏；会话目录保留
+/// `.screenrec_tmp\<session_id>` 后缀维持可诊断性，父目录/用户名不外泄）。
 fn recovery_error_string(error: &recovery::RecoveryError) -> String {
     match error {
         recovery::RecoveryError::NotFound { dir } => invalid(
             "E_SESSION_NOT_FOUND",
-            format!("会话不存在：{}", dir.display()),
+            format!("会话不存在：{}", redact_path_display(dir)),
         ),
         recovery::RecoveryError::Active { session_id } => invalid(
             "E_SESSION_ACTIVE",
             format!("会话仍在写入（拒绝收尾）：{session_id}"),
         ),
         recovery::RecoveryError::NoUsableSegments { detail } => {
-            invalid("E_RECOVERY_FAILED", detail)
+            invalid("E_RECOVERY_FAILED", redact_error_text(detail))
         }
-        recovery::RecoveryError::RecoveryFailed { detail } => invalid("E_RECOVERY_FAILED", detail),
+        recovery::RecoveryError::RecoveryFailed { detail } => {
+            invalid("E_RECOVERY_FAILED", redact_error_text(detail))
+        }
     }
 }
 
@@ -1620,9 +1806,10 @@ fn validate_session_id(session_id: &str) -> Result<(), String> {
             c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
         });
     if bad {
+        // M19c REQ-3：回显用户输入前兜底扫描，防止前端误传本地绝对路径进入错误串。
         return Err(invalid(
             "E_INVALID_SESSION_ID",
-            format!("非法会话 id：{session_id:?}"),
+            redact_error_text(&format!("非法会话 id：{session_id:?}")),
         ));
     }
     Ok(())
@@ -1708,7 +1895,9 @@ fn probe_view(caps: ProbeCapabilities) -> ProbeOut {
             .map(|e| EncoderOut {
                 name: e.name,
                 init_ok: e.init_ok,
-                detail: e.detail,
+                // M19c REQ-3：探测明细可能携带工具解析完整路径（ToolResolveError
+                // Display 保持原样，REQ-5——仅在转 UI DTO 的边界脱敏）。
+                detail: redact_error_text(&e.detail),
             })
             .collect(),
         selected_encoder,
@@ -1722,15 +1911,15 @@ fn probe_view(caps: ProbeCapabilities) -> ProbeOut {
         layers: LayersOut {
             loopback: LayerOut {
                 status: layer_status(loopback.status).to_string(),
-                detail: loopback.detail,
+                detail: redact_error_text(&loopback.detail),
             },
             mic: LayerOut {
                 status: layer_status(mic.status).to_string(),
-                detail: mic.detail,
+                detail: redact_error_text(&mic.detail),
             },
             wgc: LayerOut {
                 status: layer_status(wgc.status).to_string(),
-                detail: wgc.detail,
+                detail: redact_error_text(&wgc.detail),
             },
         },
     }
@@ -2558,5 +2747,315 @@ mod tests {
         assert!(err.contains("E_INVALID_AUDIO_PLAN"), "得到 {err}");
         let err = plan_audio_only(vec![endpoint]).expect_err("纯录音不接受端点");
         assert!(err.contains("E_INVALID_AUDIO_PLAN"), "得到 {err}");
+    }
+
+    // ─────────────────── M19c/REQ-3/5：边界脱敏与契约保留 ───────────────────
+
+    #[test]
+    fn unit_scrub_absolute_paths_drive_unc_and_tmp_suffix() {
+        // 盘符路径：仅保留 basename。
+        assert_eq!(
+            scrub_absolute_paths(&format!(
+                "写入失败（{}）",
+                r"C:\Users\elvis\Videos\out\seg.mkv"
+            )),
+            "写入失败（<redacted>\\seg.mkv）"
+        );
+        // `.screenrec_tmp` 会话后缀保留（可诊断性）。
+        assert_eq!(
+            scrub_absolute_paths(&format!(
+                "manifest 损坏：{}",
+                r"C:\Users\elvis\.screenrec_tmp\s-1\seg-0.mkv"
+            )),
+            "manifest 损坏：.screenrec_tmp\\s-1\\seg-0.mkv"
+        );
+        // verbatim（\\?\）与 UNC、正斜杠形态。
+        assert_eq!(
+            scrub_absolute_paths(&format!("路径 {}", r"\\?\C:\Users\elvis\seg.mkv")),
+            "路径 <redacted>\\seg.mkv"
+        );
+        assert_eq!(
+            scrub_absolute_paths(&format!("UNC {}", r"\\server\share\a.mkv")),
+            "UNC <redacted>\\a.mkv"
+        );
+        assert_eq!(
+            scrub_absolute_paths(&format!("正斜杠 {}", "C:/Users/elvis/a.mkv")),
+            "正斜杠 <redacted>\\a.mkv"
+        );
+        // `format!("{path:?}")` 的转义反斜杠形态被完整消费，不留盘符/父目录。
+        assert_eq!(
+            scrub_absolute_paths(&format!("失败（{:?}）", r"C:\Users\elvis\out")),
+            "失败（\"<redacted>\\out\"）"
+        );
+        // 裸盘符无 basename → <redacted>；不 panic。
+        assert_eq!(
+            scrub_absolute_paths("盘符 C:\\ 不存在"),
+            "盘符 <redacted> 不存在"
+        );
+        // 前一字符为 ASCII 字母/数字时不命中（错误码/代码片段不被误伤）。
+        assert_eq!(scrub_absolute_paths("ABCC:\\x"), "ABCC:\\x");
+    }
+
+    #[test]
+    fn unit_scrub_absolute_paths_keeps_non_path_text() {
+        let text = "E_DISK_FULL: 磁盘已满（exit code 1）";
+        assert_eq!(scrub_absolute_paths(text), text, "错误码/退出码原样保留");
+        assert_eq!(scrub_absolute_paths(""), "", "空输入不 panic");
+        assert_eq!(
+            scrub_absolute_paths("相对路径 out\\seg.mkv 原样"),
+            "相对路径 out\\seg.mkv 原样",
+            "相对片段非绝对路径，不改写"
+        );
+    }
+
+    #[test]
+    fn unit_redact_error_text_with_verbose_passthrough() {
+        let text = format!(
+            "创建输出目录失败（{}）: 拒绝访问",
+            r"C:\Users\elvis\Videos\out"
+        );
+        assert_eq!(
+            redact_error_text_with(&text, &[], true),
+            text,
+            "REQ-4：SR_DIAG_PATHS=1 原样保留完整路径"
+        );
+        let redacted = redact_error_text_with(&text, &[], false);
+        assert!(!redacted.contains("elvis"), "{redacted}");
+        assert!(redacted.contains(r"<redacted>\out"), "{redacted}");
+        assert!(redacted.contains("拒绝访问"), "{redacted}");
+    }
+
+    #[test]
+    fn unit_route_error_message_redacts_embedded_paths_keeps_code_and_reason() {
+        // detail 内嵌 .screenrec_tmp 会话段路径：保留会话后缀，去除父目录/用户名。
+        let e = RouteError::FinalizeFailed {
+            detail: format!(
+                "成品校验失败（{}）: ffprobe rc=1",
+                r"C:\Users\elvis\Videos\out\.screenrec_tmp\s-2026\seg-0.mkv"
+            ),
+        };
+        assert_eq!(route_error_code(&e), "E_FINALIZE_FAILED", "E_* 码分类不变");
+        let msg = route_error_message(&e);
+        assert!(
+            msg.contains(r".screenrec_tmp\s-2026\seg-0.mkv"),
+            "会话后缀保留（得到 {msg}）"
+        );
+        assert!(
+            !msg.contains("elvis") && !msg.contains(r"C:\Users"),
+            "父目录/用户名不得外泄（得到 {msg}）"
+        );
+        assert!(
+            msg.contains("成品校验失败") && msg.contains("ffprobe rc=1"),
+            "可诊断原因保留（得到 {msg}）"
+        );
+
+        // 非会话路径 → <redacted>\basename；E_START_FAILED 明细同样脱敏。
+        let e = RouteError::StartFailed {
+            detail: format!(
+                "创建输出目录失败（{}）: 拒绝访问",
+                r"C:\Users\elvis\Priv\out"
+            ),
+        };
+        let msg = route_error_message(&e);
+        assert!(msg.contains(r"<redacted>\out"), "得到 {msg}");
+        assert!(!msg.contains("elvis"), "得到 {msg}");
+        assert!(msg.contains("拒绝访问"), "得到 {msg}");
+    }
+
+    #[test]
+    fn unit_shot_error_string_redacts_output_path_keeps_code() {
+        let e = ShotError::OutputWriteFailed {
+            path: PathBuf::from(r"C:\Users\elvis\Pictures\shot-1.png"),
+            detail: "占用".to_string(),
+        };
+        let s = shot_error_string(e);
+        assert!(
+            s.starts_with("E_OUTPUT_UNAVAILABLE: "),
+            "E_* 码保留（得到 {s}）"
+        );
+        assert!(s.contains(r"<redacted>\shot-1.png"), "得到 {s}");
+        assert!(!s.contains("elvis") && !s.contains(r"C:\Users"), "得到 {s}");
+        assert!(s.contains("占用"), "原因保留（得到 {s}）");
+    }
+
+    #[test]
+    fn unit_merge_error_string_redacts_paths_keeps_codes() {
+        let e = MergeError::InvalidInput {
+            input: PathBuf::from(r"C:\Users\elvis\Videos\in-a.mkv"),
+            detail: "输入不可读/不可解码".to_string(),
+        };
+        let s = merge_error_string(e);
+        assert!(
+            s.starts_with("E_MERGE_INCOMPATIBLE: "),
+            "E_* 码保留（得到 {s}）"
+        );
+        assert!(s.contains(r"<redacted>\in-a.mkv"), "得到 {s}");
+        assert!(!s.contains("elvis"), "得到 {s}");
+        assert!(s.contains("输入不可读/不可解码"), "得到 {s}");
+
+        let e = MergeError::OutputUnavailable {
+            out: PathBuf::from(r"D:\Priv\final.mkv"),
+            detail: "输出已存在（不覆盖策略）".to_string(),
+        };
+        let s = merge_error_string(e);
+        assert!(
+            s.starts_with("E_OUTPUT_UNAVAILABLE: "),
+            "E_* 码保留（得到 {s}）"
+        );
+        assert!(s.contains(r"<redacted>\final.mkv"), "得到 {s}");
+        assert!(!s.contains(r"D:\Priv"), "得到 {s}");
+
+        // 上游 raw（未脱敏）的 sidecar stderr 尾部也被兜底替换，原因保留。
+        let e = MergeError::SidecarFailed {
+            detail: format!(
+                "ffmpeg 退出码 1：stderr 尾部：{}: Permission denied",
+                r"C:\Users\elvis\Videos\in-b.mkv"
+            ),
+        };
+        let s = merge_error_string(e);
+        assert!(s.starts_with("E_SIDECAR_EXIT: "), "得到 {s}");
+        assert!(s.contains(r"<redacted>\in-b.mkv"), "得到 {s}");
+        assert!(!s.contains("elvis"), "得到 {s}");
+        assert!(s.contains("Permission denied"), "原因保留（得到 {s}）");
+
+        let s = merge_error_string(MergeError::Cancelled {
+            detail: "外部取消".to_string(),
+        });
+        assert!(s.starts_with("E_CANCELLED: "), "得到 {s}");
+    }
+
+    #[test]
+    fn unit_recovery_error_string_redacts_session_dir_keeps_codes() {
+        let e = recovery::RecoveryError::NotFound {
+            dir: PathBuf::from(r"C:\Users\elvis\Videos\out\.screenrec_tmp\s-9"),
+        };
+        let s = recovery_error_string(&e);
+        assert!(
+            s.starts_with("E_SESSION_NOT_FOUND: "),
+            "NotFound 错误码保留（得到 {s}）"
+        );
+        assert!(
+            s.contains(r".screenrec_tmp\s-9"),
+            "会话后缀保留（得到 {s}）"
+        );
+        assert!(!s.contains("elvis"), "父目录/用户名不得外泄（得到 {s}）");
+
+        let e = recovery::RecoveryError::RecoveryFailed {
+            detail: format!(
+                "manifest 损坏：{}",
+                r"C:\Users\elvis\Videos\out\.screenrec_tmp\s-2\manifest.json"
+            ),
+        };
+        let s = recovery_error_string(&e);
+        assert!(s.starts_with("E_RECOVERY_FAILED: "), "得到 {s}");
+        assert!(s.contains(r".screenrec_tmp\s-2\manifest.json"), "得到 {s}");
+        assert!(!s.contains("elvis"), "得到 {s}");
+
+        let s = recovery_error_string(&recovery::RecoveryError::Active {
+            session_id: "s-live".to_string(),
+        });
+        assert!(s.starts_with("E_SESSION_ACTIVE: "), "得到 {s}");
+    }
+
+    #[test]
+    fn unit_notice_out_redacts_raw_device_id_preserves_label() {
+        let raw_id = "{0.0.0.00000000}.{5f6c1e8d-2a41-4b7c-9d3e-001122334455}";
+        let n = notice_out(&StopNotice {
+            code: "E_TARGET_LOST".to_string(),
+            endpoint: Some(raw_id.to_string()),
+            detail: "端点已失效".to_string(),
+        });
+        assert_eq!(
+            n.endpoint.as_deref(),
+            Some("<device>"),
+            "raw WASAPI 设备 ID 默认以 <device> 暴露"
+        );
+        assert_eq!(n.code, "E_TARGET_LOST", "stop_notice 错误码保留");
+
+        let n = notice_out(&StopNotice {
+            code: "E_TARGET_LOST".to_string(),
+            endpoint: Some("DELL U2720Q".to_string()),
+            detail: "设备已移除".to_string(),
+        });
+        assert_eq!(
+            n.endpoint.as_deref(),
+            Some("DELL U2720Q"),
+            "友好名标签原样保留"
+        );
+
+        // GDI 稳定设备名非 raw WASAPI ID（无用户数据），保留。
+        let n = notice_out(&StopNotice {
+            code: "E_TARGET_LOST".to_string(),
+            endpoint: Some(r"\\.\DISPLAY1".to_string()),
+            detail: "显示器已移除".to_string(),
+        });
+        assert_eq!(n.endpoint.as_deref(), Some(r"\\.\DISPLAY1"));
+
+        let n = notice_out(&StopNotice {
+            code: "E_TARGET_LOST".to_string(),
+            endpoint: None,
+            detail: "无端点信息".to_string(),
+        });
+        assert_eq!(n.endpoint, None, "None 端点不受影响");
+    }
+
+    /// M19c/REQ-5：UI 结果路径 DTO 不脱敏——RouteFinalized/ScreenshotOut/MergeOut/
+    /// SessionOut（dir/sealed_segments/final_path）序列化保留原始绝对路径。
+    #[test]
+    fn unit_m19c_result_paths_stay_unredacted() {
+        let finalized = EventOut::RouteFinalized {
+            id: "route-1".to_string(),
+            path: r"C:\Users\elvis\Videos\out\final.mkv".to_string(),
+            stop_notice: None,
+        };
+        let v = serde_json::to_value(&finalized).expect("serialize");
+        assert_eq!(v["path"], r"C:\Users\elvis\Videos\out\final.mkv");
+
+        let shot = ScreenshotOut {
+            path: r"C:\Users\elvis\Pictures\shot.png".to_string(),
+        };
+        let v = serde_json::to_value(&shot).expect("serialize");
+        assert_eq!(v["path"], r"C:\Users\elvis\Pictures\shot.png");
+
+        let merge = MergeOut {
+            out: r"C:\Users\elvis\Videos\out\merged.mkv".to_string(),
+        };
+        let v = serde_json::to_value(&merge).expect("serialize");
+        assert_eq!(v["out"], r"C:\Users\elvis\Videos\out\merged.mkv");
+
+        let session = SessionOut {
+            session_id: "s-1".to_string(),
+            dir: r"C:\Users\elvis\Videos\out\.screenrec_tmp\s-1".to_string(),
+            created_at: 1,
+            active: false,
+            manifest_ok: true,
+            routes: Vec::new(),
+            sealed_segments: vec![
+                r"C:\Users\elvis\Videos\out\.screenrec_tmp\s-1\seg-0.mkv".to_string()
+            ],
+            tail_segment: None,
+        };
+        let v = serde_json::to_value(&session).expect("serialize");
+        assert_eq!(
+            v["dir"], r"C:\Users\elvis\Videos\out\.screenrec_tmp\s-1",
+            "SessionOut.dir 保持原始路径"
+        );
+        assert_eq!(
+            v["sealed_segments"][0], r"C:\Users\elvis\Videos\out\.screenrec_tmp\s-1\seg-0.mkv",
+            "SessionOut.sealed_segments 保持原始路径"
+        );
+    }
+
+    /// M19c/REQ-3：会话 id 非法回显兜底——误传本地绝对路径不出现在错误串，
+    /// `E_INVALID_SESSION_ID` 码与既有拒绝矩阵不变。
+    #[test]
+    fn unit_invalid_session_id_echo_is_scrubbed_but_rejected() {
+        let err = validate_session_id(r"C:\Users\elvis\x").expect_err("绝对路径 id 应被拒绝");
+        assert!(err.contains("E_INVALID_SESSION_ID"), "得到 {err}");
+        assert!(!err.contains("elvis"), "得到 {err}");
+        assert!(err.contains("<redacted>"), "得到 {err}");
+        // 相对穿越 id 照旧拒绝，文本不受脱敏影响。
+        let err = validate_session_id("../evil").expect_err("穿越 id 应被拒绝");
+        assert!(err.contains("../evil"), "得到 {err}");
     }
 }

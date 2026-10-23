@@ -1371,9 +1371,18 @@ fn it_recovery_corrupt_recorded_final_keeps_session() {
         detail.contains("成品校验失败"),
         "错误应可见地指出成品校验失败（得到 {detail}）"
     );
+    // M19c REQ-6：默认错误脱敏——断言改为「basename 存在、父目录不存在」。
+    let final_name = final_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     assert!(
-        detail.contains(&final_path.display().to_string()),
-        "错误应包含损坏成品路径（得到 {detail}）"
+        !final_name.is_empty() && detail.contains(final_name.as_str()),
+        "错误应包含损坏成品 basename（得到 {detail}）"
+    );
+    assert!(
+        !detail.contains(&root.to_string_lossy().to_string()),
+        "默认错误不得包含成品父目录/绝对路径（得到 {detail}）"
     );
     assert!(
         session.exists() && session.join("manifest.json").exists(),

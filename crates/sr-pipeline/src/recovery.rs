@@ -28,6 +28,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use sr_core::redact::{redact_path, redact_tool_error};
+
 use crate::naming::{next_available, sanitize_target_name, session_tmp_dir, SESSION_TMP_DIRNAME};
 
 /// 会话目录内清单文件名（钉死）。
@@ -515,7 +517,7 @@ pub fn save_manifest_atomic(dir: &Path, m: &SessionManifest) -> Result<(), Recov
     std::fs::write(&tmp, text).map_err(|e| {
         fail(format!(
             "写 manifest 临时文件失败（{}）：{e}",
-            tmp.display()
+            redact_path(&tmp)
         ))
     })?;
     let target = dir.join(MANIFEST_FILE);
@@ -523,7 +525,7 @@ pub fn save_manifest_atomic(dir: &Path, m: &SessionManifest) -> Result<(), Recov
         let _ = std::fs::remove_file(&tmp);
         fail(format!(
             "manifest 原子替换失败（{}）：{e}",
-            target.display()
+            redact_path(&target)
         ))
     })
 }
@@ -532,15 +534,16 @@ pub fn save_manifest_atomic(dir: &Path, m: &SessionManifest) -> Result<(), Recov
 pub fn load_manifest(dir: &Path) -> Result<SessionManifest, RecoveryError> {
     let path = dir.join(MANIFEST_FILE);
     let text = std::fs::read_to_string(&path)
-        .map_err(|e| fail(format!("读 manifest 失败（{}）：{e}", path.display())))?;
+        .map_err(|e| fail(format!("读 manifest 失败（{}）：{e}", redact_path(&path))))?;
     manifest_from_json(&text)
-        .map_err(|e| fail(format!("manifest 解析失败（{}）：{e}", path.display())))
+        .map_err(|e| fail(format!("manifest 解析失败（{}）：{e}", redact_path(&path))))
 }
 
 // ─────────────────────────── 段分类 / 活动探测 ───────────────────────────
 
 fn ffprobe_path() -> Result<PathBuf, String> {
-    crate::sidecar::ffprobe_exe()
+    // RecoveryFailed detail 出口：错误文本在构造点脱敏（M19c REQ-3）。
+    crate::sidecar::ffprobe_exe().map_err(|e| redact_tool_error(&e))
 }
 
 fn list_ext(dir: &Path, ext: &str) -> Vec<PathBuf> {
@@ -773,7 +776,7 @@ fn repair_wavs_in(dir: &Path) -> Result<Vec<PathBuf>, RecoveryError> {
     let mut repaired = Vec::new();
     for wav in list_ext(dir, "wav") {
         sr_audio::wav::repair_wav(&wav)
-            .map_err(|e| fail(format!("WAV 封口失败（{}）：{e:?}", wav.display())))?;
+            .map_err(|e| fail(format!("WAV 封口失败（{}）：{e:?}", redact_path(&wav))))?;
         repaired.push(wav);
     }
     Ok(repaired)
@@ -908,7 +911,7 @@ fn finalize_session_impl(
                         ),
                         None => Err(format!(
                             "成品扩展名不受支持（{}；无法确定容器族）",
-                            f.display()
+                            redact_path(f)
                         )),
                     }
                 };
@@ -946,7 +949,7 @@ fn finalize_session_impl(
                 detail: format!(
                     "route {} 无可收尾段（{}）",
                     route.route_id,
-                    session_dir.display()
+                    redact_path(session_dir)
                 ),
             });
         }
@@ -1004,7 +1007,7 @@ fn cleanup_session_after_finalize(session_dir: &Path, keep_segments: bool) {
     if let Err(e) = discard_session(session_dir) {
         eprintln!(
             "[recovery] 恢复收尾成功，但清理原段失败（保留会话目录 {}）：{e:?}",
-            session_dir.display()
+            crate::sidecar::render_path_for_stderr(session_dir)
         );
     }
 }
@@ -1019,7 +1022,7 @@ pub fn discard_session(session_dir: &Path) -> Result<(), RecoveryError> {
     std::fs::remove_dir_all(session_dir).map_err(|e| {
         fail(format!(
             "删除会话目录失败（{}）：{e}",
-            session_dir.display()
+            redact_path(session_dir)
         ))
     })
 }
@@ -1030,8 +1033,12 @@ pub(crate) fn create_session_dir(
     session_id: &str,
 ) -> Result<PathBuf, RecoveryError> {
     let dir = session_tmp_dir(output_dir, session_id);
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| fail(format!("创建会话临时目录失败（{}）：{e}", dir.display())))?;
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        fail(format!(
+            "创建会话临时目录失败（{}）：{e}",
+            redact_path(&dir)
+        ))
+    })?;
     Ok(dir)
 }
 
@@ -1238,9 +1245,15 @@ mod tests {
             detail.contains("成品校验失败"),
             "错误应可见地指出成品校验失败（得到 {detail}）"
         );
+        // M19c REQ-6：绝对路径断言改为「basename 存在、父目录不存在」——校验对象
+        // （正确的成品名）意图不变，仅不再暴露父目录/用户名。
         assert!(
-            detail.contains(&final_path.display().to_string()),
-            "错误应包含损坏成品路径（得到 {detail}）"
+            detail.contains("20261018_120000_Target.mkv"),
+            "错误应包含损坏成品 basename（得到 {detail}）"
+        );
+        assert!(
+            !detail.contains(&root.to_string_lossy().to_string()),
+            "默认错误不得包含成品父目录/绝对路径（得到 {detail}）"
         );
         assert!(
             session.exists() && session.join(MANIFEST_FILE).exists(),
@@ -1256,6 +1269,40 @@ mod tests {
             std::fs::metadata(&final_path).expect("成品元数据").len(),
             0,
             "损坏成品不得被静默改写/删除"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// M19c REQ-2/3：manifest 读取失败 detail 只保留 basename（与 `.screenrec_tmp`
+    /// 会话后缀），不含父目录/用户名。
+    #[test]
+    fn recovery_manifest_error_detail_is_redacted() {
+        let root =
+            std::env::temp_dir().join(format!("sr_m19c_recovery_redact_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let session = root.join(SESSION_TMP_DIRNAME).join("sess-redact");
+        std::fs::create_dir_all(&session).expect("创建会话目录");
+
+        let err = load_manifest(&session).expect_err("缺失 manifest 应报 RecoveryFailed");
+        let detail = match &err {
+            RecoveryError::RecoveryFailed { detail } => detail.clone(),
+            other => panic!("应报 RecoveryFailed（得到 {other:?}）"),
+        };
+        assert!(
+            detail.contains("读 manifest 失败"),
+            "归因保留（得到 {detail}）"
+        );
+        assert!(
+            detail.contains("manifest.json"),
+            "basename 保留（得到 {detail}）"
+        );
+        assert!(
+            detail.contains(".screenrec_tmp"),
+            "会话目录后缀保留（得到 {detail}）"
+        );
+        assert!(
+            !detail.contains(&root.to_string_lossy().to_string()),
+            "父目录/用户名不得出现在默认错误（得到 {detail}）"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

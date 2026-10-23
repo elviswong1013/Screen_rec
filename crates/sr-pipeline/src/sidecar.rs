@@ -116,18 +116,49 @@ pub fn build_encode_args(
 /// 锁定 ffmpeg n8.1 release 构建（spec §8 M0 冻结；BtbN release 构建）。
 ///
 /// M11-C P1-5：运行时按「env 覆盖 → Tauri resource_dir → exe 同目录 → 开发回退」解析
-/// （`sr_core::tools`）；失败错误列出全部尝试路径。
-pub fn ffmpeg_exe() -> Result<PathBuf, String> {
-    sr_core::tools::resolve_tool_binary("ffmpeg")
-        .map(|r| r.path)
-        .map_err(|e| e.to_string())
+/// （`sr_core::tools`）；失败错误列出全部尝试路径（**原始路径**由调用方按边界脱敏渲染）。
+pub fn ffmpeg_exe() -> Result<PathBuf, sr_core::tools::ToolResolveError> {
+    sr_core::tools::resolve_tool_binary("ffmpeg").map(|r| r.path)
 }
 
 /// 锁定 ffprobe（与 ffmpeg 同一解析器；收尾时间轴校准按段读取包时间戳）。
-pub fn ffprobe_exe() -> Result<PathBuf, String> {
-    sr_core::tools::resolve_tool_binary("ffprobe")
-        .map(|r| r.path)
-        .map_err(|e| e.to_string())
+pub fn ffprobe_exe() -> Result<PathBuf, sr_core::tools::ToolResolveError> {
+    sr_core::tools::resolve_tool_binary("ffprobe").map(|r| r.path)
+}
+
+// ─────────────────────── M19c：stderr 边界脱敏渲染原语（REQ-2/4） ───────────────────────
+
+/// stderr 路径渲染：默认脱敏（仅 basename / `.screenrec_tmp` 会话后缀）；
+/// `SR_DIAG_PATHS=1|true` 显式恢复完整路径（REQ-4）。错误 detail 一律走
+/// `sr_core::redact::redact_path`（UI 出口不随环境变量变化）。
+pub(crate) fn render_path_for_stderr(path: &Path) -> String {
+    if sr_core::redact::paths_verbose() {
+        path.to_string_lossy().into_owned()
+    } else {
+        sr_core::redact::redact_path(path)
+    }
+}
+
+/// stderr 已知路径批量替换（ffmpeg/ffprobe 原始 stderr 尾部用；E_DISK_FULL 等
+/// 关键词分类必须在调用本函数**之前**完成，REQ-5）；`SR_DIAG_PATHS=1|true` 显式
+/// 恢复完整文本（REQ-4）。
+pub(crate) fn render_text_for_stderr(text: &str, known: &[&Path]) -> String {
+    if sr_core::redact::paths_verbose() {
+        text.to_string()
+    } else {
+        sr_core::redact::redact_text_known_paths(text, known)
+    }
+}
+
+/// stderr 工具解析错误渲染：默认 [`sr_core::redact::redact_tool_error`]（保留工具名/
+/// 尝试顺序/错误类别，路径脱敏）；`SR_DIAG_PATHS=1|true` 显式恢复完整路径。
+/// 不改 [`sr_core::tools::ToolResolveError`] 的 `Display`（`--self-check` 契约，REQ-5）。
+pub(crate) fn render_tool_error_for_stderr(e: &sr_core::tools::ToolResolveError) -> String {
+    if sr_core::redact::paths_verbose() {
+        e.to_string()
+    } else {
+        sr_core::redact::redact_tool_error(e)
+    }
 }
 
 /// D4 编码器链（定稿序）：`h264_nvenc → h264_qsv → h264_amf → h264_mf`（链末软件 MFT）。
@@ -143,7 +174,10 @@ pub fn detect_encoder() -> Option<String> {
             let exe = match ffmpeg_exe() {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("[sr-pipeline] 编码器探测跳过：{e}");
+                    eprintln!(
+                        "[sr-pipeline] 编码器探测跳过：{}",
+                        render_tool_error_for_stderr(&e)
+                    );
                     return None;
                 }
             };
@@ -162,7 +196,10 @@ pub fn probe_named_encoder(name: &str) -> bool {
     match ffmpeg_exe() {
         Ok(exe) => probe_encoder(&exe, name),
         Err(e) => {
-            eprintln!("[sr-pipeline] 显式编码器探测失败：{e}");
+            eprintln!(
+                "[sr-pipeline] 显式编码器探测失败：{}",
+                render_tool_error_for_stderr(&e)
+            );
             false
         }
     }
@@ -179,7 +216,10 @@ pub fn probe_encoder_size(name: &str, width: u32, height: u32) -> bool {
     let exe = match ffmpeg_exe() {
         Ok(exe) => exe,
         Err(e) => {
-            eprintln!("[sr-pipeline] 区域尺寸编码器探测失败：{e}");
+            eprintln!(
+                "[sr-pipeline] 区域尺寸编码器探测失败：{}",
+                render_tool_error_for_stderr(&e)
+            );
             return false;
         }
     };
@@ -279,7 +319,13 @@ fn probe_encoder(exe: &Path, encoder: &str) -> bool {
 /// 拉起 sidecar（stdin 关闭、stdout 丢弃、stderr 管道由调用方持续排空）；
 /// 进程级 Kill-on-close Job 绑定（D8/REQ-22：主进程消失 → sidecar 连带终止）。
 pub fn spawn_sidecar(args: &[String]) -> std::io::Result<Child> {
-    let exe = ffmpeg_exe().map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?;
+    // 错误消息在边界即脱敏（M19c：spawn 失败文本会进入 StartFailed detail/stderr）。
+    let exe = ffmpeg_exe().map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            sr_core::redact::redact_tool_error(&e),
+        )
+    })?;
     let child = Command::new(exe)
         .args(args)
         .stdin(Stdio::null())

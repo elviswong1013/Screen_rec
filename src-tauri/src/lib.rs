@@ -289,6 +289,22 @@ pub fn self_check() -> i32 {
     sr_core::tools::self_check()
 }
 
+/// M19c REQ-2：resource_dir 解析失败的 stderr 文本（纯函数；`verbose` 显式传入便于测试）。
+///
+/// 默认对错误文本中的路径脱敏（委托 [`commands::scrub_absolute_paths`]：Tauri 路径
+/// 解析错误的 Display 可能内嵌安装目录）；`verbose`（`SR_DIAG_PATHS=1`）时原样输出
+/// （REQ-4 诊断 opt-in）。托盘/窗口 API 错误不含用户数据，保持原样输出。
+fn resource_dir_failure_message(err_text: &str, verbose: bool) -> String {
+    if verbose {
+        format!("[screen-rec] resource_dir 解析失败（回退 exe 同目录）：{err_text}")
+    } else {
+        format!(
+            "[screen-rec] resource_dir 解析失败（回退 exe 同目录）：{}",
+            commands::scrub_absolute_paths(err_text)
+        )
+    }
+}
+
 /// 启动最小 Tauri 窗口 + REQ-30 外壳（托盘/单实例/设置/关闭语义）。
 pub fn run() {
     tauri::Builder::default()
@@ -299,9 +315,13 @@ pub fn run() {
         .setup(|app| {
             // M11-C P1-5：注册安装后的 Tauri resource_dir（ffmpeg/、licenses/ 资源根）。
             // 失败不阻塞启动：exe 同目录/开发回退仍在解析链中。
+            // M19c REQ-2：解析失败默认不携带完整路径（`SR_DIAG_PATHS=1` 恢复完整路径）。
             match app.path().resource_dir() {
                 Ok(dir) => sr_core::tools::set_resource_dir(dir),
-                Err(e) => eprintln!("[screen-rec] resource_dir 解析失败（回退 exe 同目录）：{e}"),
+                Err(e) => eprintln!(
+                    "{}",
+                    resource_dir_failure_message(&e.to_string(), sr_core::redact::paths_verbose())
+                ),
             }
             // 设置：启动即加载（缺失/损坏回退默认值并写回），供命令读写。
             let config_dir = app.path().app_local_data_dir()?;
@@ -515,6 +535,47 @@ mod tests {
             close_main_action(true, true, true),
             CloseMainAction::HideSilent,
             "shown 优先后续关闭不重复提示"
+        );
+    }
+
+    // ─────────────────── M19c/REQ-2：resource_dir 解析失败 stderr 脱敏 ───────────────────
+
+    /// M19c REQ-2：解析失败默认 stderr 不出现完整路径/用户名；`SR_DIAG_PATHS=1`
+    /// （verbose=true）恢复完整错误文本（REQ-4）。
+    #[test]
+    fn unit_lib_resource_dir_failure_message_redacts_path_by_default() {
+        let err = r"failed to resolve resource dir C:\Users\elvis\AppData\Local\app\resources: 系统找不到指定的路径。";
+
+        let default = resource_dir_failure_message(err, false);
+        assert!(
+            default.contains(r"<redacted>\resources"),
+            "默认应保留脱敏后 basename（得到 {default}）"
+        );
+        assert!(
+            !default.contains("elvis") && !default.contains(r"C:\Users"),
+            "默认不得泄漏父目录/用户名（得到 {default}）"
+        );
+        assert!(
+            default.contains("系统找不到指定的路径"),
+            "错误原因文本保留（得到 {default}）"
+        );
+        assert!(
+            default.starts_with("[screen-rec] resource_dir 解析失败"),
+            "既有日志前缀与回退提示保留（得到 {default}）"
+        );
+
+        let verbose = resource_dir_failure_message(err, true);
+        assert!(
+            verbose.contains(r"C:\Users\elvis"),
+            "REQ-4：SR_DIAG_PATHS=1 恢复完整路径（得到 {verbose}）"
+        );
+
+        // 无路径的错误文本（托盘/窗口类）默认原样保留。
+        let plain = "tauri runtime unavailable";
+        assert_eq!(
+            resource_dir_failure_message(plain, false),
+            format!("[screen-rec] resource_dir 解析失败（回退 exe 同目录）：{plain}"),
+            "无路径错误文本不得被改写"
         );
     }
 
