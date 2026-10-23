@@ -164,6 +164,18 @@ fn path_end(text: &str, start: usize, quote: Option<char>) -> Option<usize> {
             end = pos + c.len_utf8();
             continue;
         }
+        // 裸盘符根（`C:\` / `C:/`）后跟空白：不要把后面的普通文本吞进路径。
+        if c.is_whitespace() {
+            let prefix = &text[start..pos];
+            let pb = prefix.as_bytes();
+            if pb.len() == 3
+                && pb[0].is_ascii_alphabetic()
+                && pb[1] == b':'
+                && matches!(pb[2], b'\\' | b'/')
+            {
+                return Some(pos);
+            }
+        }
         if let Some(q) = quote {
             if c == q {
                 return Some(pos);
@@ -281,6 +293,15 @@ pub fn redact_tool_error(err: &ToolResolveError) -> String {
     }
     out.push('）');
     out
+}
+
+/// 运行期工具解析错误渲染：`SR_DIAG_PATHS=1` 时原样返回，否则脱敏。
+pub fn render_tool_error(err: &ToolResolveError) -> String {
+    if paths_verbose() {
+        err.to_string()
+    } else {
+        redact_tool_error(err)
+    }
 }
 
 #[cfg(test)]
@@ -531,9 +552,7 @@ mod tests {
 
     #[test]
     fn redact_text_paths_handles_quoted_unc_and_debug_paths() {
-        let out = redact_text_paths(
-            r#"failed: "C:\Users\Alice Smith\Private\file.mkv" (exit 1)"#,
-        );
+        let out = redact_text_paths(r#"failed: "C:\Users\Alice Smith\Private\file.mkv" (exit 1)"#);
         assert!(!out.contains("Alice"), "{out}");
         assert!(out.contains(r"<redacted>\file.mkv"), "{out}");
         assert!(out.contains("exit 1"), "{out}");

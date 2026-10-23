@@ -33,7 +33,9 @@ use tauri::{AppHandle, Manager};
 use sr_audio::wasapi::AudioSourceSpec;
 use sr_core::events::{ChannelHub, Receiver, Subscription};
 // M19c REQ-3：边界脱敏原语（specs/005-log-redaction.md）。
-use sr_core::redact::{paths_verbose, redact_device_id, redact_path, redact_text_known_paths};
+use sr_core::redact::{
+    paths_verbose, redact_device_id, redact_path, redact_text_known_paths, redact_text_paths,
+};
 use sr_enum::windows as window_enum;
 use sr_enum::{audio_sessions, monitors};
 use sr_merge::merge::{MergeConfig, MergeError};
@@ -1605,7 +1607,7 @@ fn redact_error_text_with(text: &str, known: &[&Path], verbose: bool) -> String 
     } else {
         redact_text_known_paths(text, known)
     };
-    scrub_absolute_paths(&replaced)
+    redact_text_paths(&replaced)
 }
 
 /// 运行期边界脱敏（读 `SR_DIAG_PATHS`，REQ-4）：无已知路径上下文时使用。
@@ -1638,83 +1640,7 @@ fn redact_path_display(path: &Path) -> String {
 /// `format!("{path:?}")` 的转义反斜杠（`\\`）与中英文路径组件均被完整消费；
 /// 不匹配任何形态的文本原样保留，对任何输入不 panic。
 pub(crate) fn scrub_absolute_paths(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut emitted_to = 0usize; // 已原样输出的区间终点
-    let mut i = 0usize;
-    while i < text.len() {
-        if text.is_char_boundary(i) {
-            if let Some(trigger) = absolute_path_trigger(text, i) {
-                let end = absolute_path_end(text, i + trigger);
-                out.push_str(&text[emitted_to..i]);
-                out.push_str(&redact_path(Path::new(&text[i..end])));
-                emitted_to = end;
-                i = end;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    out.push_str(&text[emitted_to..]);
-    out
-}
-
-/// 判定 `text[i..]` 是否为绝对路径子串起点；`Some(n)` = 触发前缀长度。
-fn absolute_path_trigger(text: &str, i: usize) -> Option<usize> {
-    let b = text.as_bytes();
-    // 盘符形态：X:\ 或 X:/（前一字符为字母/数字时不命中，避免切碎片段）。
-    if b.len() >= i + 3
-        && b[i].is_ascii_alphabetic()
-        && b[i + 1] == b':'
-        && (b[i + 2] == b'\\' || b[i + 2] == b'/')
-        && !text[..i]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_ascii_alphanumeric())
-    {
-        return Some(3);
-    }
-    // UNC / 设备形态：\\（\\?\、\\.\、\\server\share）。
-    if b.len() >= i + 2 && b[i] == b'\\' && b[i + 1] == b'\\' {
-        return Some(2);
-    }
-    None
-}
-
-/// 路径子串终点：从 `from` 起延续到首个终止字符（不含）。
-fn absolute_path_end(text: &str, from: usize) -> usize {
-    let mut end = from;
-    for (idx, c) in text[from..].char_indices() {
-        if is_path_terminator(c) {
-            break;
-        }
-        end = from + idx + c.len_utf8();
-    }
-    end
-}
-
-/// 错误文本中的路径终止字符：空白、引号、括号（ASCII + 全角）、Windows 非法
-/// 文件名字符与其余常见全角标点。`?` 不是终止符——`\\?\` verbatim 前缀必须
-/// 与后续路径一并完整消费。
-fn is_path_terminator(c: char) -> bool {
-    c.is_whitespace()
-        || matches!(c, '"' | '\'' | '`' | '|' | '<' | '>' | '*' | '(' | ')')
-        || matches!(
-            c,
-            '：' | '，'
-                | '；'
-                | '！'
-                | '？'
-                | '（'
-                | '）'
-                | '「'
-                | '」'
-                | '『'
-                | '』'
-                | '《'
-                | '》'
-                | '【'
-                | '】'
-        )
+    redact_text_paths(text)
 }
 
 /// 路由错误消息（去前缀；事件里 code 已单列）。
@@ -2794,6 +2720,18 @@ mod tests {
         );
         // 前一字符为 ASCII 字母/数字时不命中（错误码/代码片段不被误伤）。
         assert_eq!(scrub_absolute_paths("ABCC:\\x"), "ABCC:\\x");
+    }
+
+    #[test]
+    fn unit_scrub_absolute_paths_handles_spaces_apostrophes_parentheses() {
+        assert_eq!(
+            scrub_absolute_paths(r"失败 C:\Users\Alice Smith\Private\file.mkv: Permission denied"),
+            r"失败 <redacted>\file.mkv: Permission denied"
+        );
+        assert_eq!(
+            scrub_absolute_paths(r"C:\Users\Alice's Files\a (1).mkv: denied"),
+            r"<redacted>\a (1).mkv: denied"
+        );
     }
 
     #[test]

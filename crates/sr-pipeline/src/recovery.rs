@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use sr_core::redact::{redact_path, redact_tool_error};
+use sr_core::redact::{render_path, render_tool_error};
 
 use crate::naming::{next_available, sanitize_target_name, session_tmp_dir, SESSION_TMP_DIRNAME};
 
@@ -517,7 +517,7 @@ pub fn save_manifest_atomic(dir: &Path, m: &SessionManifest) -> Result<(), Recov
     std::fs::write(&tmp, text).map_err(|e| {
         fail(format!(
             "写 manifest 临时文件失败（{}）：{e}",
-            redact_path(&tmp)
+            render_path(&tmp)
         ))
     })?;
     let target = dir.join(MANIFEST_FILE);
@@ -525,7 +525,7 @@ pub fn save_manifest_atomic(dir: &Path, m: &SessionManifest) -> Result<(), Recov
         let _ = std::fs::remove_file(&tmp);
         fail(format!(
             "manifest 原子替换失败（{}）：{e}",
-            redact_path(&target)
+            render_path(&target)
         ))
     })
 }
@@ -534,16 +534,16 @@ pub fn save_manifest_atomic(dir: &Path, m: &SessionManifest) -> Result<(), Recov
 pub fn load_manifest(dir: &Path) -> Result<SessionManifest, RecoveryError> {
     let path = dir.join(MANIFEST_FILE);
     let text = std::fs::read_to_string(&path)
-        .map_err(|e| fail(format!("读 manifest 失败（{}）：{e}", redact_path(&path))))?;
+        .map_err(|e| fail(format!("读 manifest 失败（{}）：{e}", render_path(&path))))?;
     manifest_from_json(&text)
-        .map_err(|e| fail(format!("manifest 解析失败（{}）：{e}", redact_path(&path))))
+        .map_err(|e| fail(format!("manifest 解析失败（{}）：{e}", render_path(&path))))
 }
 
 // ─────────────────────────── 段分类 / 活动探测 ───────────────────────────
 
 fn ffprobe_path() -> Result<PathBuf, String> {
     // RecoveryFailed detail 出口：错误文本在构造点脱敏（M19c REQ-3）。
-    crate::sidecar::ffprobe_exe().map_err(|e| redact_tool_error(&e))
+    crate::sidecar::ffprobe_exe().map_err(|e| render_tool_error(&e))
 }
 
 fn list_ext(dir: &Path, ext: &str) -> Vec<PathBuf> {
@@ -776,7 +776,7 @@ fn repair_wavs_in(dir: &Path) -> Result<Vec<PathBuf>, RecoveryError> {
     let mut repaired = Vec::new();
     for wav in list_ext(dir, "wav") {
         sr_audio::wav::repair_wav(&wav)
-            .map_err(|e| fail(format!("WAV 封口失败（{}）：{e:?}", redact_path(&wav))))?;
+            .map_err(|e| fail(format!("WAV 封口失败（{}）：{e:?}", render_path(&wav))))?;
         repaired.push(wav);
     }
     Ok(repaired)
@@ -911,7 +911,7 @@ fn finalize_session_impl(
                         ),
                         None => Err(format!(
                             "成品扩展名不受支持（{}；无法确定容器族）",
-                            redact_path(f)
+                            render_path(f)
                         )),
                     }
                 };
@@ -949,7 +949,7 @@ fn finalize_session_impl(
                 detail: format!(
                     "route {} 无可收尾段（{}）",
                     route.route_id,
-                    redact_path(session_dir)
+                    render_path(session_dir)
                 ),
             });
         }
@@ -1022,7 +1022,7 @@ pub fn discard_session(session_dir: &Path) -> Result<(), RecoveryError> {
     std::fs::remove_dir_all(session_dir).map_err(|e| {
         fail(format!(
             "删除会话目录失败（{}）：{e}",
-            redact_path(session_dir)
+            render_path(session_dir)
         ))
     })
 }
@@ -1036,7 +1036,7 @@ pub(crate) fn create_session_dir(
     std::fs::create_dir_all(&dir).map_err(|e| {
         fail(format!(
             "创建会话临时目录失败（{}）：{e}",
-            redact_path(&dir)
+            render_path(&dir)
         ))
     })?;
     Ok(dir)

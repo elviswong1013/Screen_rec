@@ -397,12 +397,14 @@ impl Settings {
 /// 保留 serde 原因；`verbose`（`SR_DIAG_PATHS=1`）时保持完整路径（REQ-4 诊断 opt-in，
 /// 与既有 `{path:?}` 形态一致）。
 fn parse_failure_message(reason: impl std::fmt::Display, path: &Path, verbose: bool) -> String {
+    let reason = reason.to_string();
     if verbose {
         format!("[settings] {path:?} 解析失败，回退默认值: {reason}")
     } else {
         format!(
-            "[settings] {} 解析失败，回退默认值: {reason}",
-            sr_core::redact::redact_path(path)
+            "[settings] {} 解析失败，回退默认值: {}",
+            sr_core::redact::redact_path(path),
+            sr_core::redact::redact_text_paths(&reason)
         )
     }
 }
@@ -1022,6 +1024,33 @@ mod tests {
         assert!(
             verbose.contains(reason),
             "verbose 同样保留 serde 原因（得到 {verbose}）"
+        );
+    }
+
+    #[test]
+    fn unit_settings_parse_failure_reason_path_is_redacted() {
+        let path = Path::new(r"C:\Users\elvis\AppData\Local\com.screenrec.desktop\settings.json");
+        let reason =
+            r#"invalid type: string "C:\Users\Alice Smith\Private\file.mkv", expected u32"#;
+
+        let default = parse_failure_message(reason, path, false);
+        assert!(
+            !default.contains("Alice"),
+            "reason 中的路径必须脱敏：{default}"
+        );
+        assert!(
+            default.contains(r"<redacted>\file.mkv"),
+            "reason 保留 basename：{default}"
+        );
+        assert!(
+            default.contains("invalid type") && default.contains("expected u32"),
+            "serde 错误类别必须保留：{default}"
+        );
+
+        let verbose = parse_failure_message(reason, path, true);
+        assert!(
+            verbose.contains("Alice Smith"),
+            "opt-in 恢复完整 reason：{verbose}"
         );
     }
 

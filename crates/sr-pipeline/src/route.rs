@@ -33,7 +33,7 @@ use sr_capture::pipe::{
 };
 use sr_capture::region::{CaptureLossLatch, RegionCrop};
 use sr_capture::wgc::{self, LatestFrame, StreamControl, StreamStartError};
-use sr_core::redact::{redact_device_id, redact_path, redact_text_known_paths};
+use sr_core::redact::{redact_device_id, render_path, render_text_known_paths, render_text_paths};
 
 use crate::naming::{format_timestamp, next_available, sanitize_target_name};
 use crate::sidecar::{
@@ -1137,7 +1137,7 @@ pub fn start_audio_only_with_options_and_rate(
     })?;
 
     std::fs::create_dir_all(&cfg.output_dir).map_err(|e| RouteError::StartFailed {
-        detail: format!("创建输出目录失败（{}）: {e}", redact_path(&cfg.output_dir)),
+        detail: format!("创建输出目录失败（{}）: {e}", render_path(&cfg.output_dir)),
     })?;
 
     // P1-3：纯录音纳入恢复状态机——真实会话目录 + manifest（streams=["wav"]），
@@ -1214,7 +1214,7 @@ pub fn start_audio_only_with_options_and_rate(
                 }
                 let _ = std::fs::remove_dir_all(&session_dir);
                 return Err(RouteError::StartFailed {
-                    detail: format!("创建 WAV 失败（{}）: {e:?}", redact_path(&path)),
+                    detail: format!("创建 WAV 失败（{}）: {e:?}", render_path(&path)),
                 });
             }
         }
@@ -1282,7 +1282,7 @@ pub fn start_audio_only_with_options_and_rate(
                     }
                     Err(_) => {
                         first_err
-                            .get_or_insert(format!("WAV 写线程 panic（{}）", redact_path(path)));
+                            .get_or_insert(format!("WAV 写线程 panic（{}）", render_path(path)));
                     }
                 }
             }
@@ -1321,7 +1321,7 @@ fn commit_audio_only(
         if len > 44 {
             Ok(())
         } else {
-            Err(format!("WAV 校验失败（{}: {len} 字节）", redact_path(path)))
+            Err(format!("WAV 校验失败（{}: {len} 字节）", render_path(path)))
         }
     };
     let mut committed = Vec::with_capacity(wav_paths.len());
@@ -1330,10 +1330,7 @@ fn commit_audio_only(
         crate::naming::safe_commit(src, &final_path, verify).map_err(|e| {
             // CommitError::FinalExists 的 Debug 携带成品绝对路径：detail 在构造点脱敏。
             RouteError::FinalizeFailed {
-                detail: redact_text_known_paths(
-                    &format!("WAV 安全提交失败: {e:?}"),
-                    &[src, &final_path],
-                ),
+                detail: render_text_paths(&format!("WAV 安全提交失败: {e:?}")),
             }
         })?;
         committed.push(final_path);
@@ -1870,7 +1867,7 @@ fn start_route_impl(
     //     段/ffconcat 清单落会话临时目录 <output>/.screenrec_tmp/<session_id>；
     //     会话开始时创建并写 manifest（原子；REQ-22 恢复锚点）。 ──
     std::fs::create_dir_all(&output_dir).map_err(|e| RouteError::StartFailed {
-        detail: format!("创建输出目录失败（{}）: {e}", redact_path(&output_dir)),
+        detail: format!("创建输出目录失败（{}）: {e}", render_path(&output_dir)),
     })?;
     let token = sanitize_target_name(&target_name);
     let ts = format_timestamp(current_unix_ms(), local_utc_offset_minutes());
@@ -2640,7 +2637,7 @@ fn sidecar_exit_error(
         return RouteError::DiskFull {
             detail: format!(
                 "输出写失败（exit {code}）；stderr 尾部: {}",
-                redact_text_known_paths(&tail3, known)
+                render_text_known_paths(&tail3, known)
             ),
         };
     }
@@ -2656,7 +2653,7 @@ fn sidecar_exit_error(
     RouteError::SidecarExit {
         detail: format!(
             "退出码 {code}；stderr 尾部: {}{send_note}",
-            redact_text_known_paths(&tail, known)
+            render_text_known_paths(&tail, known)
         ),
     }
 }
@@ -2732,7 +2729,7 @@ impl FfmpegRunner {
                 //（M19c REQ-2/3；退出码与 ffmpeg 原因保留）。
                 Err(format!(
                     "{what} 退出码 {code:?}；stderr 尾部: {}",
-                    redact_text_known_paths(&tail, known)
+                    render_text_known_paths(&tail, known)
                 ))
             }
             MediaWait::Timeout => Err(format!("{what} 超时（{}s）", timeout.as_secs())),

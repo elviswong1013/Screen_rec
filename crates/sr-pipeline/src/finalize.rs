@@ -34,7 +34,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use sr_core::redact::{redact_path, redact_text_known_paths, redact_tool_error};
+use sr_core::redact::{render_path, render_text_known_paths, render_text_paths, render_tool_error};
 
 /// 单段视频/音频时间戳摘要（ffprobe 包扫描；秒）。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -98,7 +98,7 @@ pub fn write_segment_list(
         }
     }
     std::fs::write(list_path, list)
-        .map_err(|e| format!("写收尾清单失败（{}）: {e}", redact_path(list_path)))
+        .map_err(|e| format!("写收尾清单失败（{}）: {e}", render_path(list_path)))
 }
 
 /// 成品校验（收尾提交与恢复幂等复用同一口径）：存在 + 非零 + ffprobe 可解析且
@@ -117,10 +117,10 @@ pub(crate) fn verify_final_media_with_expectation(
     expected: Option<MediaExpectation>,
 ) -> Result<(), String> {
     let len = std::fs::metadata(p)
-        .map_err(|e| format!("成品校验失败（{}：不存在或不可读：{e}）", redact_path(p)))?
+        .map_err(|e| format!("成品校验失败（{}：不存在或不可读：{e}）", render_path(p)))?
         .len();
     if len == 0 {
-        return Err(format!("成品校验失败（{}：0 字节）", redact_path(p)));
+        return Err(format!("成品校验失败（{}：0 字节）", render_path(p)));
     }
     let out = Command::new(ffprobe)
         .args([
@@ -133,7 +133,7 @@ pub(crate) fn verify_final_media_with_expectation(
         ])
         .arg(p)
         .output()
-        .map_err(|e| format!("成品校验失败（{}：ffprobe 启动失败：{e}）", redact_path(p)))?;
+        .map_err(|e| format!("成品校验失败（{}：ffprobe 启动失败：{e}）", render_path(p)))?;
     if !out.status.success() {
         let tail: String = String::from_utf8_lossy(&out.stderr)
             .lines()
@@ -143,8 +143,8 @@ pub(crate) fn verify_final_media_with_expectation(
             .join(" | ");
         return Err(format!(
             "成品校验失败（{}：不可解析：{}）",
-            redact_path(p),
-            redact_text_known_paths(&tail, &[p])
+            render_path(p),
+            render_text_known_paths(&tail, &[p])
         ));
     }
     let dur: f64 = String::from_utf8_lossy(&out.stdout)
@@ -154,7 +154,7 @@ pub(crate) fn verify_final_media_with_expectation(
     if !(dur > 0.0) {
         return Err(format!(
             "成品校验失败（{}：时长无效 {dur}）",
-            redact_path(p)
+            render_path(p)
         ));
     }
     if let Some(expected) = expected {
@@ -162,7 +162,7 @@ pub(crate) fn verify_final_media_with_expectation(
         if video != expected.video || audio != expected.audio {
             return Err(format!(
                 "成品校验失败（{}：轨数不符：期望 v={} a={}，实际 v={video} a={audio}）",
-                redact_path(p),
+                render_path(p),
                 expected.video,
                 expected.audio
             ));
@@ -184,12 +184,12 @@ fn probe_stream_counts(ffprobe: &Path, p: &Path) -> Result<(usize, usize), Strin
         ])
         .arg(p)
         .output()
-        .map_err(|e| format!("轨数校验失败（{}：ffprobe 启动失败：{e}）", redact_path(p)))?;
+        .map_err(|e| format!("轨数校验失败（{}：ffprobe 启动失败：{e}）", render_path(p)))?;
     if !out.status.success() {
         return Err(format!(
             "轨数校验失败（{}：{}）",
-            redact_path(p),
-            redact_text_known_paths(&String::from_utf8_lossy(&out.stderr), &[p])
+            render_path(p),
+            render_text_known_paths(&String::from_utf8_lossy(&out.stderr), &[p])
         ));
     }
     let (mut video, mut audio) = (0usize, 0usize);
@@ -520,14 +520,14 @@ pub(crate) fn verify_final_media_with_container(
         .map_err(|e| {
             format!(
                 "成品校验失败（{label} {}：不存在或不可读：{e}）",
-                redact_path(p)
+                render_path(p)
             )
         })?
         .len();
     if len == 0 {
         return Err(format!(
             "成品校验失败（{label} {}：0 字节）",
-            redact_path(p)
+            render_path(p)
         ));
     }
     let out = Command::new(ffprobe)
@@ -544,7 +544,7 @@ pub(crate) fn verify_final_media_with_container(
         .map_err(|e| {
             format!(
                 "成品校验失败（{label} {}：ffprobe 启动失败：{e}）",
-                redact_path(p)
+                render_path(p)
             )
         })?;
     if !out.status.success() {
@@ -556,8 +556,8 @@ pub(crate) fn verify_final_media_with_container(
             .join(" | ");
         return Err(format!(
             "成品校验失败（{label} {}：不可解析：{}）",
-            redact_path(p),
-            redact_text_known_paths(&tail, &[p])
+            render_path(p),
+            render_text_known_paths(&tail, &[p])
         ));
     }
     let text = String::from_utf8_lossy(&out.stdout);
@@ -573,21 +573,21 @@ pub(crate) fn verify_final_media_with_container(
     if !container_family_ok(container, &format_name) {
         return Err(format!(
             "成品校验失败（{label} {}：容器族不符：format_name={format_name:?}，期望 {}）",
-            redact_path(p),
+            render_path(p),
             container_family_label(container)
         ));
     }
     if !(duration > 0.0) {
         return Err(format!(
             "成品校验失败（{label} {}：时长无效 {duration}）",
-            redact_path(p)
+            render_path(p)
         ));
     }
     let (video, audio) = probe_stream_counts(ffprobe, p)?;
     if video != expected.video || audio != expected.audio {
         return Err(format!(
             "成品校验失败（{label} {}：轨数不符：期望 v={} a={}，实际 v={video} a={audio}）",
-            redact_path(p),
+            render_path(p),
             expected.video,
             expected.audio
         ));
@@ -755,7 +755,7 @@ pub(crate) fn run_finalize_transaction(
 
     runner.concat(job.list_path, &concat_tmp, cancel)?;
     let ffprobe = crate::sidecar::ffprobe_exe()
-        .map_err(|e| format!("收尾校验失败：{}", redact_tool_error(&e)))?;
+        .map_err(|e| format!("收尾校验失败：{}", render_tool_error(&e)))?;
     verify_final_media_with_container(
         &ffprobe,
         &concat_tmp,
@@ -791,10 +791,7 @@ pub(crate) fn run_finalize_transaction(
     committed.map_err(|e| match e {
         crate::naming::CommitError::Cancelled => "已取消（批量回滚），未提交成品".to_string(),
         // CommitError::FinalExists 的 Debug 携带成品绝对路径：detail 在构造点脱敏。
-        other => format!(
-            "成品提交失败: {}",
-            redact_text_known_paths(&format!("{other:?}"), &[&commit_src, job.final_path])
-        ),
+        other => format!("成品提交失败: {}", render_text_paths(&format!("{other:?}"))),
     })?;
     Ok(job.final_path.to_path_buf())
 }
